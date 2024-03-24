@@ -1,0 +1,34 @@
+data:
+  dataset_name_or_path: /home/mingyang/projs/OmniAE/data/InternVid-10M-FLT-clip.txt
+
+model:
+  down_block_types:
+    - SpatialDownBlock3D
+    - SpatialDownBlock3D
+    - TemporalDownBlock3D
+    - TemporalDownBlock3D
+  up_block_types:
+    - TemporalUpBlock3D
+    - TemporalUpBlock3D
+    - SpatialUpBlock3D
+    - SpatialUpBlock3D
+  block_out_channels:
+    - 64
+    - 128
+    - 256
+    - 512
+  layers_per_block: 2
+  norm_num_groups: 2
+
+optimizer:
+  learning_rate: 0.0001
+
+runner:
+  runner_cls_path: omni_gen.runners.vae_trainer.VAETrainer
+  num_devices: 8
+  train_batch_size: 2
+  # mixed_precision: bf16
+  gradient_accumulation_steps: 8
+  checkpointing_every_n_steps: 200
+  discriminator_start_steps: 10000
+  log_with: wandb
