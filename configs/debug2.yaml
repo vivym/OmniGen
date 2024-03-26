@@ -11,10 +11,8 @@ data:
 model:
   down_block_types:
     - SpatialDownBlock3D
-    - SpatialDownBlock3D
-    - SpatialDownBlock3D
-    - TemporalDownBlock3D
-    - TemporalDownBlock3D
+    - SpatialTemporalDownBlock3D
+    - SpatialTemporalDownBlock3D
   up_block_types:
     - TemporalUpBlock3D
     - TemporalUpBlock3D
@@ -27,7 +25,7 @@ model:
     - 256
     - 512
     - 512
-  layers_per_block: 2
+  layers_per_block: 4
 
 optimizer:
   learning_rate: 0.00025

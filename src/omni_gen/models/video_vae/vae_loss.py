@@ -98,6 +98,7 @@ class VAELoss(nn.Module):
             "loss_perceptual": loss_perceptual.detach().mean(),
             "loss_nll": loss_nll.detach(),
             "loss_kl": loss_kl.detach(),
+            "logvar": self.logvar.detach(),
         }
 
         if gan_stage == "generator":

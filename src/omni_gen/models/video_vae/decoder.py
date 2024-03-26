@@ -87,13 +87,13 @@ class Decoder(nn.Module):
         for i, up_block_type in enumerate(up_block_types):
             input_channels = output_channels
             output_channels = reversed_block_out_channels[i]
-            is_first_block = i == 0   # TODO: whether it is necessary
+            is_first_block = i == 0
 
             up_block = get_up_block(
                 up_block_type,
                 in_channels=input_channels,
                 out_channels=output_channels,
-                num_layers=layers_per_block + 1,
+                num_layers=layers_per_block + 1,    # TODO: check this
                 act_fn=act_fn,
                 norm_num_groups=norm_num_groups,
                 norm_eps=1e-6,

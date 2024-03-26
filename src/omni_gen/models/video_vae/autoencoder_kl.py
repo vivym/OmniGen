@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 
 from omni_gen.utils.distributions import DiagonalGaussianDistribution
+from omni_gen.utils.accelerate import apply_forward_hook
 from .decoder import Decoder
 from .encoder import Encoder
 from .vae_loss import VAELoss
@@ -70,7 +71,7 @@ class AutoencoderKL(nn.Module):
         block_out_channels: tuple[int, ...] = (64,),
         use_gc_blocks: tuple[bool, ...] | None = None,
         mid_block_type: str = "MidBlock3D",
-        mid_block_use_attention: bool = True,
+        mid_block_use_attention: bool = False,
         mid_block_attention_type: str = "3d",
         mid_block_num_attention_heads: int = 1,
         layers_per_block: int = 1,
@@ -80,6 +81,20 @@ class AutoencoderKL(nn.Module):
         norm_num_groups: int = 32,
         scaling_factor: float = 0.18215,
         with_loss: bool = False,
+        lpips_model_name_or_path: str = "vivym/lpips",
+        init_logvar: float = 0.0,
+        reconstruction_loss_weight: float = 1.0,
+        perceptual_loss_weight: float = 1.0,
+        nll_loss_weight: float = 1.0,
+        kl_loss_weight: float = 1.0,
+        discriminator_loss_weight: float = 0.5,
+        disc_in_channels: int = 3,
+        disc_block_out_channels: tuple[int] = (64,),
+        disc_use_gc_blocks: tuple[bool] | None = None,
+        disc_layers_per_block: int = 2,
+        disc_norm_num_groups: int = 32,
+        disc_act_fn: str = "silu",
+        disc_num_attention_heads: int = 1,
     ):
         super().__init__()
 
@@ -127,8 +142,25 @@ class AutoencoderKL(nn.Module):
         self.quant_conv = nn.Conv3d(2 * latent_channels, 2 * latent_channels, kernel_size=1)
         self.post_quant_conv = nn.Conv3d(latent_channels, latent_channels, kernel_size=1)
 
-        self.loss = VAELoss()
+        if with_loss:
+            self.loss = VAELoss(
+                lpips_model_name_or_path=lpips_model_name_or_path,
+                init_logvar=init_logvar,
+                reconstruction_loss_weight=reconstruction_loss_weight,
+                perceptual_loss_weight=perceptual_loss_weight,
+                nll_loss_weight=nll_loss_weight,
+                kl_loss_weight=kl_loss_weight,
+                discriminator_loss_weight=discriminator_loss_weight,
+                disc_in_channels=disc_in_channels,
+                disc_block_out_channels=disc_block_out_channels,
+                disc_use_gc_blocks=disc_use_gc_blocks,
+                disc_layers_per_block=disc_layers_per_block,
+                disc_norm_num_groups=disc_norm_num_groups,
+                disc_act_fn=disc_act_fn,
+                disc_num_attention_heads=disc_num_attention_heads,
+            )
 
+    @apply_forward_hook
     def encode(self, x: torch.Tensor) -> EncoderOutput:
         h = self.encoder(x)
 
@@ -138,6 +170,7 @@ class AutoencoderKL(nn.Module):
 
         return EncoderOutput(latent_dist=posterior)
 
+    @apply_forward_hook
     def decode(self, z: torch.Tensor) -> DecoderOutput:
         z = self.post_quant_conv(z)
 
@@ -154,6 +187,7 @@ class AutoencoderKL(nn.Module):
             self.post_quant_conv.parameters(),
         )
 
+    @apply_forward_hook
     def training_step(
         self,
         samples: torch.Tensor,

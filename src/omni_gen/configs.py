@@ -7,7 +7,13 @@ class DataConfig:
 
     revision: str | None = None
 
-    num_workers: int = 16
+    num_workers: int = 8
+
+    spatial_size: int | tuple[int, int] = 256
+
+    num_frames: int = 17
+
+    frame_intervals: int | tuple[int, ...] = 1
 
 
 @dataclass
@@ -34,7 +40,7 @@ class ModelConfig:
 
     mid_block_type: str = "MidBlock3D"
 
-    mid_block_use_attention: bool = True
+    mid_block_use_attention: bool = False
 
     mid_block_attention_type: str = "3d"
 

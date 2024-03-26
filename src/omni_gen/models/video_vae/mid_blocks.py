@@ -92,7 +92,7 @@ class MidBlock3D(nn.Module):
         ])
 
         self.attentions = nn.ModuleList([])
-        for _ in range(num_layers):
+        for _ in range(num_layers - 1):
             if add_attention:
                 if attention_type == "3d":
                     self.attentions.append(

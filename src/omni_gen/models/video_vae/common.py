@@ -1,3 +1,5 @@
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -12,42 +14,49 @@ class CausalConv3d(nn.Module):
         in_channels: int,
         out_channels: int,
         kernel_size: int | tuple[int, int, int],
-        pad_mode: str = "constant",
+        stride: int | tuple[int, int, int] = 1,
+        dilation: int | tuple[int, int, int] = 1,
         **kwargs,
     ):
         super().__init__()
 
+        kwargs.pop("padding")
+
         kernel_size = kernel_size if isinstance(kernel_size, tuple) else (kernel_size,) * 3
         assert len(kernel_size) == 3, f"Kernel size must be a 3-tuple, got {kernel_size} instead."
 
+        stride = stride if isinstance(stride, tuple) else (stride,) * 3
+        assert len(stride) == 3, f"Stride must be a 3-tuple, got {stride} instead."
+
+        dilation = dilation if isinstance(dilation, tuple) else (dilation,) * 3
+        assert len(dilation) == 3, f"Dilation must be a 3-tuple, got {dilation} instead."
+
         t_ks, h_ks, w_ks = kernel_size
-        assert h_ks % 2 == 1 and w_ks % 2 == 1, f"Kernel size must be odd, got {kernel_size} instead."
+        t_stride, h_stride, w_stride = stride
+        t_dilation, h_dilation, w_dilation = dilation
 
-        dilation: int = kwargs.get("dilation", 1)
-        stride: int = kwargs.get("stride", 1)
-
-        self.pad_mode = pad_mode
-
-        t_pad = (t_ks - 1) * dilation + (1 - stride)
-        h_pad = h_ks // 2
-        w_pad = w_ks // 2
+        t_pad = (t_ks - 1) * t_dilation + (1 - t_stride)
+        h_pad = math.ceil(((h_ks - 1) * h_dilation + (1 - h_stride)) / 2)
+        w_pad = math.ceil(((w_ks - 1) * w_dilation + (1 - w_stride)) / 2)
 
         self.temporal_padding = t_pad
-        self.causal_padding = (w_pad, w_pad, h_pad, h_pad, t_pad, 0)
 
         self.conv = nn.Conv3d(
             in_channels=in_channels,
             out_channels=out_channels,
             kernel_size=kernel_size,
-            stride=(stride, 1, 1),
-            dilation=(dilation, 1, 1),
+            stride=stride,
+            dilation=dilation,
+            padding=(0, h_pad, w_pad),
             **kwargs,
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: (B, C, T, H, W)
-        pad_mode = self.pad_mode if self.temporal_padding < x.shape[2] else "constant"
-        x = F.pad(x, self.causal_padding, mode=pad_mode)
+        x = F.pad(
+            x,
+            pad=(0, 0, 0, 0, self.temporal_padding, 0),
+        )
         return self.conv(x)
 
 
@@ -167,140 +176,6 @@ class ResidualBlock3D(nn.Module):
         x = self.conv2(x)
 
         return (x + shortcut) / self.output_scale_factor
-
-
-class SpatialDownsample2x(nn.Module):
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        kernel_size: int = 3,
-    ):
-        super().__init__()
-
-        self.conv = nn.Conv2d(
-            in_channels=in_channels,
-            out_channels=out_channels,
-            kernel_size=kernel_size,
-            stride=2,
-            padding=kernel_size // 2,
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        is_video = x.ndim == 5
-
-        if is_video:
-            # b, c, t, h, w -> (b t), c, h, w
-            batch_size = x.shape[0]
-            x = rearrange(x, "b c t h w -> (b t) c h w")
-
-        x = self.conv(x)
-
-        if is_video:
-            # (b t), c, h, w -> b, c, t, h, w
-            x = rearrange(x, "(b t) c h w -> b c t h w", b=batch_size)
-
-        return x
-
-
-class SpatialUpsample2x(nn.Module):
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-    ):
-        super().__init__()
-
-        self.conv = nn.Conv2d(in_channels, out_channels * 4, kernel_size=1)
-
-        o, i, h, w = self.conv.weight.shape
-        conv_weight = torch.empty(o // 4, i, h, w)
-        nn.init.kaiming_normal_(conv_weight)
-        conv_weight = repeat(conv_weight, "o ... -> (o 4) ...")
-        self.conv.weight.data.copy_(conv_weight)
-
-        nn.init.zeros_(self.conv.bias)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        is_video = x.ndim == 5
-
-        if is_video:
-            # b, c, t, h, w -> (b t), c, h, w
-            batch_size = x.shape[0]
-            x = rearrange(x, "b c t h w -> (b t) c h w")
-
-        x = self.conv(x)
-        x = F.silu(x)
-        x = rearrange(x, "b (c p1 p2) h w -> b c (h p1) (w p2)", p1=2, p2=2)
-
-        if is_video:
-            # (b t), c, h, w -> b, c, t, h, w
-            x = rearrange(x, "(b t) c h w -> b c t h w", b=batch_size)
-
-        return x
-
-
-class TemporalDownsample2x(nn.Module):
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        kernel_size: int = 3,
-    ):
-        super().__init__()
-
-        self.causal_padding = (kernel_size - 1, 0)
-
-        self.conv = nn.Conv1d(
-            in_channels=in_channels,
-            out_channels=out_channels,
-            kernel_size=kernel_size,
-            stride=2,
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # b, c, t, h, w -> (b h w), c, t
-        batch_size, height = x.shape[0], x.shape[3]
-        x = rearrange(x, "b c t h w -> (b h w) c t")
-
-        x = F.pad(x, pad=self.causal_padding)
-        x = self.conv(x)
-
-        # (b h w), c, t -> b, c, t, h, w
-        x = rearrange(x, "(b h w) c t -> b c t h w", b=batch_size, h=height)
-        return x
-
-
-class TemporalUpsample2x(nn.Module):
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-    ):
-        super().__init__()
-
-        self.conv = nn.Conv1d(in_channels, out_channels * 2, kernel_size=1)
-
-        o, i, t = self.conv.weight.shape
-        conv_weight = torch.empty(o // 2, i, t)
-        nn.init.kaiming_normal_(conv_weight)
-        conv_weight = repeat(conv_weight, "o ... -> (o 2) ...")
-        self.conv.weight.data.copy_(conv_weight)
-
-        nn.init.zeros_(self.conv.bias)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # b, c, t, h, w -> (b h w), c, t
-        batch_size, height = x.shape[0], x.shape[3]
-        x = rearrange(x, "b c t h w -> (b h w) c t")
-
-        x = self.conv(x)
-        x = F.silu(x)
-        x = rearrange(x, "b (c p) t -> b c (t p)", p=2)
-
-        # (b h w), c, t -> b, c, t, h, w
-        x = rearrange(x, "(b h w) c t -> b c t h w", b=batch_size, h=height)
-        return x
 
 
 class SpatialNorm2D(nn.Module):

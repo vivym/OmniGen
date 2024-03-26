@@ -114,10 +114,15 @@ class VideoDataset(Dataset):
                     if step_seeking and seekable:
                         container.seek(seek_target, stream=video_stream)
 
+        if len(frames) == 0:
+            raise ValueError(f"Failed to extract frames from {video_path} frame_interval: {frame_interval} start_frame: {start_frame}")
+
         if len(frames) < self.num_frames:
             for _ in range(self.num_frames - len(frames)):
                 frames.append(frames[-1])
 
         frames = torch.stack(frames, dim=1)
+
+        frames = frames * 2 - 1
 
         return {"pixel_values": frames}

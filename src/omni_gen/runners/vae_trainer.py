@@ -54,23 +54,19 @@ class VAETrainer(Runner):
         train_dataloader = self.setup_dataloader()
 
         vae, ema_vae = self.setup_models(accelerator)
-        params_to_optimize = list(vae.parameters_without_loss())
 
-        optimizer, lr_scheduler = self.setup_optimizer(vae.parameters_without_loss())
-
-        disc_optimizer, disc_lr_scheduler = self.setup_optimizer(vae.loss.parameters())
+        params_to_optimize = list(vae.parameters())
+        optimizer, lr_scheduler = self.setup_optimizer(params_to_optimize)
 
         (
-            train_dataloader, vae, optimizer, lr_scheduler, disc_optimizer, disc_lr_scheduler
+            train_dataloader, vae, optimizer, lr_scheduler
         ) = accelerator.prepare(
-            train_dataloader, vae, optimizer, lr_scheduler, disc_optimizer, disc_lr_scheduler
+            train_dataloader, vae, optimizer, lr_scheduler
         )
         train_dataloader: DataLoader
         vae: AutoencoderKL
         optimizer: torch.optim.Optimizer
         lr_scheduler: torch.optim.lr_scheduler.LRScheduler
-        disc_optimizer: torch.optim.Optimizer
-        disc_lr_scheduler: torch.optim.lr_scheduler.LRScheduler
 
         if accelerator.is_main_process:
             accelerator.init_trackers(
@@ -101,6 +97,14 @@ class VAETrainer(Runner):
 
         # TODO: skip initial steps if resuming from checkpoint
 
+        # For mixed precision training we cast all non-trainable weights to half-precision
+        # as these weights are only used for inference, keeping weights in full precision is not required.
+        weight_dtype = torch.float32
+        if accelerator.mixed_precision == "fp16":
+            weight_dtype = torch.float16
+        elif accelerator.mixed_precision == "bf16":
+            weight_dtype = torch.bfloat16
+
         done = False
         while not done:
             vae.train()
@@ -110,7 +114,7 @@ class VAETrainer(Runner):
             for batch in train_dataloader:
                 with accelerator.accumulate(vae):
                     loss, loss_dict_i = vae.training_step(
-                        samples=batch["pixel_values"],
+                        samples=batch["pixel_values"].to(dtype=weight_dtype),
                         gan_stage=gan_stage,
                     )
 
@@ -132,10 +136,6 @@ class VAETrainer(Runner):
                     optimizer.step()
                     lr_scheduler.step()
                     optimizer.zero_grad()
-
-                    disc_optimizer.step()
-                    disc_lr_scheduler.step()
-                    disc_optimizer.zero_grad()
 
                 logs = {"lr": lr_scheduler.get_last_lr()[0]}
 
@@ -166,12 +166,9 @@ class VAETrainer(Runner):
 
                 if (
                     accelerator.sync_gradients and \
-                    accelerator.is_main_process and \
                     global_step % self.runner_config.checkpointing_every_n_steps == 0
                 ):
-                    accelerator.wait_for_everyone()
-
-                    save_path = os.path.join(self.runner_config.storage_path, f"checkpoint-{global_step}")
+                    save_path = os.path.join(self.runner_config.storage_path, f"checkpoint-{global_step:08d}")
                     accelerator.save_state(save_path)
                     logger.info(f"Saved state to {save_path}")
 
@@ -189,7 +186,12 @@ class VAETrainer(Runner):
                 if line:
                     video_paths.append(line.strip())
 
-        dataset = VideoDataset(video_paths)
+        dataset = VideoDataset(
+            video_paths,
+            spatial_size=self.data_config.spatial_size,
+            num_frames=self.data_config.num_frames,
+            frame_intervals=self.data_config.frame_intervals,
+        )
 
         return DataLoader(
             dataset,
@@ -218,6 +220,13 @@ class VAETrainer(Runner):
             norm_num_groups=self.model_config.norm_num_groups,
             scaling_factor=self.model_config.scaling_factor,
             with_loss=True,
+            lpips_model_name_or_path=self.runner_config.lpips_model_name_or_path,
+            init_logvar=self.runner_config.init_logvar,
+            reconstruction_loss_weight=self.runner_config.reconstruction_loss_weight,
+            perceptual_loss_weight=self.runner_config.perceptual_loss_weight,
+            nll_loss_weight=self.runner_config.nll_loss_weight,
+            kl_loss_weight=self.runner_config.kl_loss_weight,
+            discriminator_loss_weight=self.runner_config.discriminator_loss_weight,
         )
 
         vae.train()

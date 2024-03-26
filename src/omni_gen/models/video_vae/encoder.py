@@ -77,7 +77,7 @@ class Encoder(nn.Module):
         for i, down_block_type in enumerate(down_block_types):
             input_channels = output_channels
             output_channels = block_out_channels[i]
-            is_final_block = i == len(block_out_channels) - 1   # TODO: whether it is necessary
+            is_final_block = i == len(block_out_channels) - 1
 
             down_block = get_down_block(
                 down_block_type,
