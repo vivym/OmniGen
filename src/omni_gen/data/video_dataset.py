@@ -26,6 +26,7 @@ class VideoDataset(Dataset):
         spatial_size: int | tuple[int, int] = 256,
         num_frames: int = 17,
         frame_intervals: int | tuple[int, ...] = 1,
+        training: bool = True,
     ):
         if isinstance(frame_intervals, int):
             frame_intervals = (frame_intervals,)
@@ -34,10 +35,12 @@ class VideoDataset(Dataset):
         self.spatial_size = spatial_size
         self.num_frames = num_frames
         self.frame_intervals = tuple(frame_intervals)
+        self.training = training
 
         self.transform = T.Compose([
-            T.RandomResizedCrop(size=spatial_size),
-            T.RandomHorizontalFlip(),
+            T.Resize(spatial_size),
+            T.RandomCrop(spatial_size) if training else T.CenterCrop(spatial_size),
+            T.RandomHorizontalFlip() if training else T.Lambda(lambda x: x),
             T.ToTensor(),
         ])
 

@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from .common import CausalConv3d
 
@@ -89,10 +90,39 @@ class SpatialTemporalDownsampler3D(Downsampler):
         return self.conv(x)
 
 
+class BlurPooling2D(Downsampler):
+    def __init__(self, in_channels: int, out_channels: int | None = None):
+        if out_channels is None:
+            out_channels = in_channels
+
+        assert in_channels == out_channels
+
+        super().__init__(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            spatial_downsample_factor=2,
+            temporal_downsample_factor=1,
+        )
+
+        filt = torch.tensor([1, 2, 1], dtype=torch.float32)
+        filt = torch.einsum("i,j -> ij", filt, filt)
+        filt = filt / filt.sum()
+        filt = filt[None, None].repeat(out_channels, 1, 1, 1)
+
+        self.register_buffer("filt", filt)
+        self.filt: torch.Tensor
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (B, C, H, W)
+        return F.conv2d(x, self.filt, stride=2, padding=1, groups=self.in_channels)
+
+
 class BlurPooling3D(Downsampler):
     def __init__(self, in_channels: int, out_channels: int | None = None):
         if out_channels is None:
             out_channels = in_channels
+
+        assert in_channels == out_channels
 
         super().__init__(
             in_channels=in_channels,
@@ -100,3 +130,15 @@ class BlurPooling3D(Downsampler):
             spatial_downsample_factor=2,
             temporal_downsample_factor=2,
         )
+
+        filt = torch.tensor([1, 2, 1], dtype=torch.float32)
+        filt = torch.einsum("i,j,k -> ijk", filt, filt, filt)
+        filt = filt / filt.sum()
+        filt = filt[None, None].repeat(out_channels, 1, 1, 1, 1)
+
+        self.register_buffer("filt", filt)
+        self.filt: torch.Tensor
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (B, C, T, H, W)
+        return F.conv3d(x, self.filt, stride=2, padding=1, groups=self.in_channels)

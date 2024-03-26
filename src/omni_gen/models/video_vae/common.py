@@ -20,7 +20,7 @@ class CausalConv3d(nn.Module):
     ):
         super().__init__()
 
-        kwargs.pop("padding")
+        kwargs.pop("padding", None)
 
         kernel_size = kernel_size if isinstance(kernel_size, tuple) else (kernel_size,) * 3
         assert len(kernel_size) == 3, f"Kernel size must be a 3-tuple, got {kernel_size} instead."
@@ -32,14 +32,14 @@ class CausalConv3d(nn.Module):
         assert len(dilation) == 3, f"Dilation must be a 3-tuple, got {dilation} instead."
 
         t_ks, h_ks, w_ks = kernel_size
-        t_stride, h_stride, w_stride = stride
+        _, h_stride, w_stride = stride
         t_dilation, h_dilation, w_dilation = dilation
 
-        t_pad = (t_ks - 1) * t_dilation + (1 - t_stride)
+        t_pad = (t_ks - 1) * t_dilation
         h_pad = math.ceil(((h_ks - 1) * h_dilation + (1 - h_stride)) / 2)
         w_pad = math.ceil(((w_ks - 1) * w_dilation + (1 - w_stride)) / 2)
 
-        self.temporal_padding = t_pad
+        self.temporal_padding = (t_pad, 0)
 
         self.conv = nn.Conv3d(
             in_channels=in_channels,
@@ -55,7 +55,7 @@ class CausalConv3d(nn.Module):
         # x: (B, C, T, H, W)
         x = F.pad(
             x,
-            pad=(0, 0, 0, 0, self.temporal_padding, 0),
+            pad=(0, 0, 0, 0, *self.temporal_padding),
         )
         return self.conv(x)
 

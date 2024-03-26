@@ -1,5 +1,6 @@
 import copy
 import os
+import random
 
 import torch
 from accelerate import Accelerator
@@ -51,7 +52,7 @@ class VAETrainer(Runner):
 
         accelerator = self.setup_accelerator()
 
-        train_dataloader = self.setup_dataloader()
+        train_dataloader, val_dataloader = self.setup_dataloader()
 
         vae, ema_vae = self.setup_models(accelerator)
 
@@ -59,19 +60,30 @@ class VAETrainer(Runner):
         optimizer, lr_scheduler = self.setup_optimizer(params_to_optimize)
 
         (
-            train_dataloader, vae, optimizer, lr_scheduler
+            train_dataloader, val_dataloader, vae, optimizer, lr_scheduler
         ) = accelerator.prepare(
-            train_dataloader, vae, optimizer, lr_scheduler
+            train_dataloader, val_dataloader, vae, optimizer, lr_scheduler
         )
         train_dataloader: DataLoader
+        val_dataloader: DataLoader
         vae: AutoencoderKL
         optimizer: torch.optim.Optimizer
         lr_scheduler: torch.optim.lr_scheduler.LRScheduler
 
         if accelerator.is_main_process:
+            configs = {}
+            for prefix, config in [
+                ("data", self.data_config),
+                ("model", self.model_config),
+                ("optimizer", self.optimizer_config),
+                ("runner", self.runner_config),
+            ]:
+                for k, v in config.items():
+                    configs[f"{prefix}_{k}"] = v
+
             accelerator.init_trackers(
                 project_name=self.runner_config.name,
-                config=self.runner_config,
+                config=configs,
             )
 
         total_batch_size = (
@@ -97,24 +109,22 @@ class VAETrainer(Runner):
 
         # TODO: skip initial steps if resuming from checkpoint
 
-        # For mixed precision training we cast all non-trainable weights to half-precision
-        # as these weights are only used for inference, keeping weights in full precision is not required.
-        weight_dtype = torch.float32
+        dtype = torch.float32
         if accelerator.mixed_precision == "fp16":
-            weight_dtype = torch.float16
+            dtype = torch.float16
         elif accelerator.mixed_precision == "bf16":
-            weight_dtype = torch.bfloat16
+            dtype = torch.bfloat16
 
         done = False
         while not done:
             vae.train()
 
-            loss_dict: dict[str, torch.Tensor] = {}
+            log_dict: dict[str, torch.Tensor] = {}
 
             for batch in train_dataloader:
                 with accelerator.accumulate(vae):
-                    loss, loss_dict_i = vae.training_step(
-                        samples=batch["pixel_values"].to(dtype=weight_dtype),
+                    loss, log_dict_i = vae.training_step(
+                        samples=batch["pixel_values"].to(dtype=dtype),
                         gan_stage=gan_stage,
                     )
 
@@ -125,13 +135,13 @@ class VAETrainer(Runner):
                             params_to_optimize, self.runner_config.gradient_clipping
                         )
 
-                    # Gather the losses across all processes for logging (if we use distributed training).
-                    for k, v in loss_dict_i.items():
-                        if k not in loss_dict:
-                            loss_dict[k] = 0.0
+                    # Gather the values across all processes for logging (if we use distributed training).
+                    for k, v in log_dict_i.items():
+                        if k not in log_dict:
+                            log_dict[k] = 0.0
 
-                        losses: torch.Tensor = accelerator.gather(v)
-                        loss_dict[k] += losses.mean()
+                        values: torch.Tensor = accelerator.gather(v)
+                        log_dict[k] += values.mean()
 
                     optimizer.step()
                     lr_scheduler.step()
@@ -147,12 +157,18 @@ class VAETrainer(Runner):
                     progress_bar.update(1)
                     global_step += 1
 
-                    for k, v in loss_dict.items():
-                        loss_dict[k] = v.item() / self.runner_config.gradient_accumulation_steps
-                    # logs.update({"loss": loss_dict["loss"]})
-                    logs.update(loss_dict)
-                    accelerator.log(loss_dict, step=global_step)
-                    loss_dict: dict[str, torch.Tensor] = {}
+                    for k, v in log_dict.items():
+                        log_dict[k] = v.item() / self.runner_config.gradient_accumulation_steps
+                    logs.update(log_dict)
+                    accelerator.log({"lr": logs["lr"]}, step=global_step)
+                    accelerator.log(
+                        {
+                            f"train/{k}": v
+                            for k, v in log_dict.items()
+                        },
+                        step=global_step,
+                    )
+                    log_dict: dict[str, torch.Tensor] = {}
 
                     if gan_stage == "generator":
                         gan_stage = "discriminator"
@@ -166,19 +182,155 @@ class VAETrainer(Runner):
 
                 if (
                     accelerator.sync_gradients and \
+                    self.runner_config.checkpointing_every_n_steps is not None and \
                     global_step % self.runner_config.checkpointing_every_n_steps == 0
                 ):
                     save_path = os.path.join(self.runner_config.storage_path, f"checkpoint-{global_step:08d}")
                     accelerator.save_state(save_path)
                     logger.info(f"Saved state to {save_path}")
 
+                if (
+                    accelerator.sync_gradients and \
+                    self.runner_config.validation_every_n_steps is not None and \
+                    global_step % self.runner_config.validation_every_n_steps == 0
+                ):
+                    self.validation_loop(
+                        accelerator=accelerator,
+                        val_dataloader=val_dataloader,
+                        vae=vae,
+                        ema_vae=ema_vae,
+                        dtype=dtype,
+                        global_step=global_step,
+                    )
+
                 if global_step >= self.runner_config.max_steps:
                     done = True
                     break
 
+            if self.runner_config.checkpointing_every_n_steps is None:
+                save_path = os.path.join(self.runner_config.storage_path, f"checkpoint-{global_step:08d}")
+                accelerator.save_state(save_path)
+                logger.info(f"Saved state to {save_path}")
+
+            if self.runner_config.validation_every_n_steps is None:
+                self.validation_loop(
+                    accelerator=accelerator,
+                    val_dataloader=val_dataloader,
+                    vae=vae,
+                    ema_vae=ema_vae,
+                    dtype=dtype,
+                    global_step=global_step,
+                )
+
         accelerator.end_training()
 
-    def setup_dataloader(self) -> DataLoader:
+    def validation_loop(
+        self,
+        accelerator: Accelerator,
+        val_dataloader: DataLoader,
+        vae: AutoencoderKL,
+        ema_vae: EMAModel | None,
+        dtype: torch.dtype,
+        global_step: int,
+    ):
+        logger.info("Running validation...")
+
+        if self.runner_config.use_ema:
+            # Store the VAE parameters temporarily and load the EMA parameters to perform inference.
+            ema_vae.store(vae.parameters())
+            ema_vae.copy_to(vae.parameters())
+
+        if vae.training:
+            vae.eval()
+            restore_training = True
+        else:
+            restore_training = False
+
+        num_samples_to_log = 0
+        samples_to_log = []
+        rec_samples_to_log = []
+        log_dict: dict[str, torch.Tensor] = {}
+        num_samples = 0
+
+        with torch.inference_mode():
+            for batch in tqdm(val_dataloader, desc="Validation", disable=not accelerator.is_main_process):
+                rec_samples, loss, log_dict_i = vae.validation_step(batch["pixel_values"].to(dtype=dtype))
+
+                if accelerator.is_main_process:
+                    if num_samples_to_log < 16:
+                        samples_to_log.append(batch["pixel_values"])
+                        rec_samples_to_log.append(rec_samples.to(dtype=torch.float32))
+                        num_samples_to_log += rec_samples.shape[0]
+
+                for k, v in log_dict_i.items():
+                    if k not in log_dict:
+                        log_dict[k] = 0.0
+                    log_dict[k] += v
+                num_samples += 1
+
+            log_dict = accelerator.gather(log_dict)
+            num_samples = torch.as_tensor(num_samples, device=loss.device)
+            num_samples: torch.Tensor = accelerator.gather(num_samples)
+            num_samples = num_samples.sum().cpu()
+
+            log_dict = {k: v.cpu().sum() / num_samples for k, v in log_dict.items()}
+            accelerator.log(
+                {
+                    f"val/{k}": v
+                    for k, v in log_dict.items()
+                },
+                step=global_step,
+            )
+
+            if accelerator.is_main_process:
+                samples_to_log = torch.cat(samples_to_log, dim=0)
+                rec_samples_to_log = torch.cat(rec_samples_to_log, dim=0)
+
+                samples_to_log = torch.clamp((samples_to_log + 1) / 2 * 255, min=0, max=255)
+                rec_samples_to_log = torch.clamp((rec_samples_to_log + 1) / 2 * 255, min=0, max=255)
+
+                # B, C, T, H, W -> B, T, C, H, W
+                samples_to_log = samples_to_log.to(dtype=torch.uint8).transpose(1, 2).cpu().numpy()
+                rec_samples_to_log = rec_samples_to_log.to(dtype=torch.uint8).transpose(1, 2).cpu().numpy()
+
+                for tracker in accelerator.trackers:
+                    if tracker.name == "tensorboard":
+                        tracker.writer.add_video(
+                            "val/samples",
+                            samples_to_log,
+                            fps=4,
+                            global_step=global_step,
+                        )
+                        tracker.writer.add_video(
+                            "val/rec_samples",
+                            rec_samples_to_log,
+                            fps=4,
+                            global_step=global_step,
+                        )
+                    elif tracker.name == "wandb":
+                        import wandb
+
+                        tracker.log(
+                            {
+                                "val/samples": [
+                                    wandb.Video(video, fps=4, caption=f"#{i:02d}")
+                                    for i, video in enumerate(samples_to_log)
+                                ],
+                                "val/rec_samples": [
+                                    wandb.Video(video, fps=4, caption=f"#{i:02d}")
+                                    for i, video in enumerate(rec_samples_to_log)
+                                ],
+                            },
+                            step=global_step,
+                        )
+
+        if restore_training:
+            vae.train()
+
+        if self.runner_config.use_ema:
+            ema_vae.restore(vae.parameters())
+
+    def setup_dataloader(self) -> tuple[DataLoader, DataLoader]:
         video_paths = []
         with open(self.data_config.dataset_name_or_path, "r") as f:
             for line in f:
@@ -186,21 +338,47 @@ class VAETrainer(Runner):
                 if line:
                     video_paths.append(line.strip())
 
-        dataset = VideoDataset(
-            video_paths,
+        random.shuffle(video_paths)
+
+        # TODO: make this configurable
+        train_video_paths = video_paths[:-1024]
+        val_video_paths = video_paths[len(train_video_paths):]
+
+        train_dataset = VideoDataset(
+            train_video_paths,
             spatial_size=self.data_config.spatial_size,
             num_frames=self.data_config.num_frames,
             frame_intervals=self.data_config.frame_intervals,
+            training=True,
         )
 
-        return DataLoader(
-            dataset,
+        val_dataset = VideoDataset(
+            val_video_paths,
+            spatial_size=self.data_config.spatial_size,
+            num_frames=self.data_config.num_frames,
+            frame_intervals=self.data_config.frame_intervals,
+            training=False,
+        )
+
+        train_dataloader = DataLoader(
+            train_dataset,
             batch_size=self.runner_config.train_batch_size,
             shuffle=True,
             num_workers=4,
             pin_memory=True,
             drop_last=True,
         )
+
+        val_dataloader = DataLoader(
+            val_dataset,
+            batch_size=self.runner_config.val_batch_size,
+            shuffle=False,
+            num_workers=4,
+            pin_memory=True,
+            drop_last=False,
+        )
+
+        return train_dataloader, val_dataloader
 
     def setup_models(self, accelerator: Accelerator) -> tuple[AutoencoderKL, EMAModel | None]:
         vae = AutoencoderKL(
@@ -212,6 +390,7 @@ class VAETrainer(Runner):
             use_gc_blocks=self.model_config.use_gc_blocks,
             mid_block_type=self.model_config.mid_block_type,
             mid_block_use_attention=self.model_config.mid_block_use_attention,
+            mid_block_attention_type=self.model_config.mid_block_attention_type,
             mid_block_num_attention_heads=self.model_config.mid_block_num_attention_heads,
             layers_per_block=self.model_config.layers_per_block,
             act_fn=self.model_config.act_fn,
@@ -220,15 +399,15 @@ class VAETrainer(Runner):
             norm_num_groups=self.model_config.norm_num_groups,
             scaling_factor=self.model_config.scaling_factor,
             with_loss=True,
-            lpips_model_name_or_path=self.runner_config.lpips_model_name_or_path,
-            init_logvar=self.runner_config.init_logvar,
-            reconstruction_loss_weight=self.runner_config.reconstruction_loss_weight,
-            perceptual_loss_weight=self.runner_config.perceptual_loss_weight,
-            nll_loss_weight=self.runner_config.nll_loss_weight,
-            kl_loss_weight=self.runner_config.kl_loss_weight,
-            discriminator_loss_weight=self.runner_config.discriminator_loss_weight,
+            lpips_model_name_or_path=self.model_config.lpips_model_name_or_path,
+            init_logvar=self.model_config.init_logvar,
+            reconstruction_loss_weight=self.model_config.reconstruction_loss_weight,
+            perceptual_loss_weight=self.model_config.perceptual_loss_weight,
+            nll_loss_weight=self.model_config.nll_loss_weight,
+            kl_loss_weight=self.model_config.kl_loss_weight,
+            discriminator_loss_weight=self.model_config.discriminator_loss_weight,
+            disc_block_out_channels=self.model_config.disc_block_out_channels,
         )
-
         vae.train()
 
         # TODO: dtype? (for lpips_metric)
@@ -236,12 +415,31 @@ class VAETrainer(Runner):
 
         # Create EMA for the vae.
         if self.runner_config.use_ema:
-            ema_vae = copy.deepcopy(vae)
-            ema_vae = EMAModel(
-                ema_vae.parameters(),
-            )
+            params = copy.deepcopy(list(vae.parameters()))
+            ema_vae = EMAModel(params, use_ema_warmup=True)
             ema_vae.to(accelerator.device)
         else:
             ema_vae = None
+
+        # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
+        def save_model_hook(models: list, weights: list, output_dir: str):
+            if accelerator.is_main_process:
+                if self.runner_config.use_ema:
+                    state_dict = ema_vae.state_dict()
+                    model_path = os.path.join(output_dir, "ema_vae.bin")
+                    torch.save(state_dict, model_path)
+
+                # TODO: save vae
+
+        def load_model_hook(models: list, input_dir: str):
+            if self.runner_config.use_ema:
+                model_path = os.path.join(input_dir, "ema_vae.bin")
+                state_dict = torch.load(model_path, map_location=accelerator.device)
+                ema_vae.load_state_dict(state_dict)
+
+                # TODO: load vae
+
+        accelerator.register_save_state_pre_hook(save_model_hook)
+        accelerator.register_load_state_pre_hook(load_model_hook)
 
         return vae, ema_vae

@@ -58,6 +58,24 @@ class ModelConfig:
 
     scaling_factor: float = 0.18215
 
+    lpips_model_name_or_path: str = "vivym/lpips"
+
+    init_logvar: float = 0.0
+
+    reconstruction_loss_type: str = "l1"
+
+    reconstruction_loss_weight: float = 1.0
+
+    perceptual_loss_weight: float = 1.0
+
+    nll_loss_weight: float = 1.0
+
+    kl_loss_weight: float = 1.0
+
+    discriminator_loss_weight: float = 0.5
+
+    disc_block_out_channels: tuple[int, ...] = (64,)
+
 
 @dataclass
 class OptimizerConfig:
@@ -92,6 +110,8 @@ class RunnerConfig:
 
     train_batch_size: int = 1
 
+    val_batch_size: int = 1
+
     seed: int | None = None
 
     use_ema: bool = False
@@ -122,24 +142,10 @@ class RunnerConfig:
 
     num_gpus_per_worker: int = 1
 
-    checkpointing_every_n_steps: int = 2000
+    validation_every_n_steps: int | None = None
+
+    checkpointing_every_n_steps: int | None = None
 
     verbose_mode: int = 1   #  0 = silent, 1 = default, 2 = verbose. Defaults to 1.
-
-    reconstruction_loss_type: str = "l1"    # Choose from "l1", "l2"
-
-    reconstruction_loss_weight: float = 1.0
-
-    perceptual_loss_weight: float = 1.0
-
-    nll_loss_weight: float = 1.0
-
-    kl_loss_weight: float = 1.0
-
-    init_logvar: float = 0.0
-
-    lpips_model_name_or_path: str = "vivym/lpips"
-
-    discriminator_loss_weight: float = 0.5
 
     discriminator_start_steps: int = 1000

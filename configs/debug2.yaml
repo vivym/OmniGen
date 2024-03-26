@@ -13,11 +13,13 @@ model:
     - SpatialDownBlock3D
     - SpatialTemporalDownBlock3D
     - SpatialTemporalDownBlock3D
+    - SpatialTemporalDownBlock3D
+    - SpatialTemporalDownBlock3D
   up_block_types:
-    - TemporalUpBlock3D
-    - TemporalUpBlock3D
-    - SpatialUpBlock3D
-    - SpatialUpBlock3D
+    - SpatialTemporalUpBlock3D
+    - SpatialTemporalUpBlock3D
+    - SpatialTemporalUpBlock3D
+    - SpatialTemporalUpBlock3D
     - SpatialUpBlock3D
   block_out_channels:
     - 128
@@ -26,22 +28,38 @@ model:
     - 512
     - 512
   layers_per_block: 4
+  latent_channels: 32
+  reconstruction_loss_type: l1
+  reconstruction_loss_weight: 2.0
+  perceptual_loss_weight: 0.5
+  kl_loss_weight: 0.00001
+  discriminator_loss_weight: 0.5
+  disc_block_out_channels:
+    - 128
+    - 256
+    - 512
+    - 512
+    - 512
 
 optimizer:
   learning_rate: 0.00025
+  lr_scheduler: cosine
+  lr_warmup_steps: 200
 
 runner:
   runner_cls_path: omni_gen.runners.vae_trainer.VAETrainer
   name: VideoVAE
-  num_devices: 4
+  num_devices: 8
+  max_steps: 1_000_000
   train_batch_size: 2
+  val_batch_size: 2
   seed: 233
-  use_ema: False
+  use_ema: True
   gradient_accumulation_steps: 8
   zero_stage: 2
   gradient_checkpointing: False
   mixed_precision: bf16
-  checkpointing_every_n_steps: 100
-  kl_loss_weight: 0.0001
-  discriminator_start_steps: 10000
+  # validation_every_n_steps: 5
+  # checkpointing_every_n_steps: 5
+  discriminator_start_steps: 3000
   log_with: wandb

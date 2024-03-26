@@ -118,7 +118,7 @@ class Decoder(nn.Module):
 
         upscale_dtype = next(iter(self.up_blocks.parameters())).dtype
         x = self.mid_block(x)
-        x = x.to(upscale_dtype)
+        x = x.to(upscale_dtype) # TODO: check this
 
         for up_block in self.up_blocks:
             x = up_block(x)

@@ -33,7 +33,8 @@ dependencies = [
   "transformers>=4.38.2",
   "datasets>=2.18.0",
   "xformers>=0.0.25",
-  "wandb>=0.16.4",
+  "wandb>=0.16.5",
+  "moviepy>=1.0.3",
 ]
 
 [project.urls]

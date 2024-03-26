@@ -83,18 +83,13 @@ class AutoencoderKL(nn.Module):
         with_loss: bool = False,
         lpips_model_name_or_path: str = "vivym/lpips",
         init_logvar: float = 0.0,
+        reconstruction_loss_type: str = "l1",
         reconstruction_loss_weight: float = 1.0,
         perceptual_loss_weight: float = 1.0,
         nll_loss_weight: float = 1.0,
         kl_loss_weight: float = 1.0,
         discriminator_loss_weight: float = 0.5,
-        disc_in_channels: int = 3,
         disc_block_out_channels: tuple[int] = (64,),
-        disc_use_gc_blocks: tuple[bool] | None = None,
-        disc_layers_per_block: int = 2,
-        disc_norm_num_groups: int = 32,
-        disc_act_fn: str = "silu",
-        disc_num_attention_heads: int = 1,
     ):
         super().__init__()
 
@@ -117,11 +112,6 @@ class AutoencoderKL(nn.Module):
             num_attention_heads=num_attention_heads,
             double_z=True,
         )
-
-        temporal_downsample_factor = 1
-        for down_block in self.encoder.down_blocks:
-            temporal_downsample_factor *= down_block.temporal_downsample_factor
-        self.temporal_padding = temporal_downsample_factor - 1
 
         self.decoder = Decoder(
             in_channels=latent_channels,
@@ -146,18 +136,14 @@ class AutoencoderKL(nn.Module):
             self.loss = VAELoss(
                 lpips_model_name_or_path=lpips_model_name_or_path,
                 init_logvar=init_logvar,
+                reconstruction_loss_type=reconstruction_loss_type,
                 reconstruction_loss_weight=reconstruction_loss_weight,
                 perceptual_loss_weight=perceptual_loss_weight,
                 nll_loss_weight=nll_loss_weight,
                 kl_loss_weight=kl_loss_weight,
                 discriminator_loss_weight=discriminator_loss_weight,
-                disc_in_channels=disc_in_channels,
+                disc_in_channels=in_channels,
                 disc_block_out_channels=disc_block_out_channels,
-                disc_use_gc_blocks=disc_use_gc_blocks,
-                disc_layers_per_block=disc_layers_per_block,
-                disc_norm_num_groups=disc_norm_num_groups,
-                disc_act_fn=disc_act_fn,
-                disc_num_attention_heads=disc_num_attention_heads,
             )
 
     @apply_forward_hook
@@ -175,7 +161,6 @@ class AutoencoderKL(nn.Module):
         z = self.post_quant_conv(z)
 
         decoded = self.decoder(z)
-        decoded = decoded[:, :, self.temporal_padding:, ...]
 
         return DecoderOutput(sample=decoded)
 
@@ -206,3 +191,21 @@ class AutoencoderKL(nn.Module):
             last_layer_weight=self.decoder.conv_out.conv.weight,
             gan_stage=gan_stage,
         )
+
+    @apply_forward_hook
+    def validation_step(self, samples: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
+        posteriors = self.encode(samples).latent_dist
+
+        z = posteriors.sample()
+
+        rec_samples = self.decode(z).sample
+
+        loss, log_dict = self.loss(
+            samples=samples,
+            posteriors=posteriors,
+            rec_samples=rec_samples,
+            last_layer_weight=self.decoder.conv_out.conv.weight,
+            gan_stage="none",
+        )
+
+        return rec_samples, loss, log_dict
