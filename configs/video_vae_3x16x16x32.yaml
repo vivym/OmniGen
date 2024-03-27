@@ -30,8 +30,8 @@ model:
   layers_per_block: 4
   latent_channels: 32
   reconstruction_loss_type: l1
-  reconstruction_loss_weight: 2.0
-  perceptual_loss_weight: 0.5
+  reconstruction_loss_weight: 5.0
+  perceptual_loss_weight: 1.0
   kl_loss_weight: 0.00001
   discriminator_loss_weight: 0.5
   disc_block_out_channels:
@@ -42,9 +42,9 @@ model:
     - 512
 
 optimizer:
-  learning_rate: 0.00025
+  learning_rate: 0.0002
   lr_scheduler: cosine
-  lr_warmup_steps: 200
+  lr_warmup_steps: 500
 
 runner:
   runner_cls_path: omni_gen.runners.vae_trainer.VAETrainer
@@ -59,7 +59,7 @@ runner:
   zero_stage: 2
   gradient_checkpointing: False
   mixed_precision: bf16
-  # validation_every_n_steps: 5
-  # checkpointing_every_n_steps: 5
+  validation_every_n_steps: 250
+  checkpointing_every_n_steps: 250
   discriminator_start_steps: 3000
   log_with: wandb

@@ -36,10 +36,13 @@ class DiscriminatorBlock2D(nn.Module):
 
         self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
 
-        self.shortcut = nn.Sequential(
-            BlurPooling2D(in_channels, in_channels),
-            nn.Conv2d(in_channels, out_channels, kernel_size=1),
-        )
+        if add_downsample:
+            self.shortcut = nn.Sequential(
+                BlurPooling2D(in_channels, in_channels),
+                nn.Conv2d(in_channels, out_channels, kernel_size=1),
+            )
+        else:
+            self.shortcut = nn.Identity()
 
         self.spatial_downsample_factor = 2
         self.temporal_downsample_factor = 1
@@ -136,10 +139,13 @@ class DiscriminatorBlock3D(nn.Module):
 
         self.conv2 = nn.Conv3d(out_channels, out_channels, kernel_size=3, padding=1)
 
-        self.shortcut = nn.Sequential(
-            BlurPooling3D(in_channels, in_channels),
-            nn.Conv3d(in_channels, out_channels, kernel_size=1),
-        )
+        if add_downsample:
+            self.shortcut = nn.Sequential(
+                BlurPooling3D(in_channels, in_channels),
+                nn.Conv3d(in_channels, out_channels, kernel_size=1),
+            )
+        else:
+            self.shortcut = nn.Identity()
 
         self.spatial_downsample_factor = 2
         self.temporal_downsample_factor = 2

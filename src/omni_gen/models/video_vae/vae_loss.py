@@ -125,7 +125,7 @@ class VAELoss(nn.Module):
 
             if samples.shape[2] > 1:
                 logits_fake_3d = self.discriminator_3d(rec_samples[:, :, 1:])
-                loss_g_3d = -torch.mean(logits_fake_3d[:, :, 1:])
+                loss_g_3d = -torch.mean(logits_fake_3d)
 
                 if last_layer_weight is not None:
                     disc_weight_3d = compute_adaptive_disc_weight(

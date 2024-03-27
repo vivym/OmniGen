@@ -149,3 +149,5 @@ class RunnerConfig:
     verbose_mode: int = 1   #  0 = silent, 1 = default, 2 = verbose. Defaults to 1.
 
     discriminator_start_steps: int = 1000
+
+    resume_from_checkpoint: str | None = None

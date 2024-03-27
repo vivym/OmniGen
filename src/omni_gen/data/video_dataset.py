@@ -38,7 +38,7 @@ class VideoDataset(Dataset):
         self.training = training
 
         self.transform = T.Compose([
-            T.Resize(spatial_size),
+            T.Resize(spatial_size, antialias=True),
             T.RandomCrop(spatial_size) if training else T.CenterCrop(spatial_size),
             T.RandomHorizontalFlip() if training else T.Lambda(lambda x: x),
             T.ToTensor(),

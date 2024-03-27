@@ -39,7 +39,7 @@ class CausalConv3d(nn.Module):
         h_pad = math.ceil(((h_ks - 1) * h_dilation + (1 - h_stride)) / 2)
         w_pad = math.ceil(((w_ks - 1) * w_dilation + (1 - w_stride)) / 2)
 
-        self.temporal_padding = (t_pad, 0)
+        self.temporal_padding = t_pad
 
         self.conv = nn.Conv3d(
             in_channels=in_channels,
@@ -55,7 +55,8 @@ class CausalConv3d(nn.Module):
         # x: (B, C, T, H, W)
         x = F.pad(
             x,
-            pad=(0, 0, 0, 0, *self.temporal_padding),
+            pad=(0, 0, 0, 0, self.temporal_padding, 0),
+            # mode="replicate",     # TODO: check if this is necessary
         )
         return self.conv(x)
 

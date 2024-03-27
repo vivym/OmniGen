@@ -96,8 +96,33 @@ class VAETrainer(Runner):
         logger.info(f"  Gradient Accumulation steps = {self.runner_config.gradient_accumulation_steps}")
         logger.info(f"  Total optimization steps = {self.runner_config.max_steps}")
         global_step = 0
-        initial_global_step = 0
         gan_stage = "none" if self.runner_config.discriminator_start_steps > global_step else "generator"
+
+        if self.runner_config.resume_from_checkpoint is not None:
+            if self.runner_config.resume_from_checkpoint == "latest":
+                # Get the most recent checkpoint
+                dirs = os.listdir(self.runner_config.storage_path)
+                dirs = [d for d in dirs if d.startswith("checkpoint")]
+                dirs = sorted(dirs, key=lambda x: int(x.split("-")[1]))
+                path = dirs[-1] if len(dirs) > 0 else None
+            else:
+                path = os.path.basename(self.runner_config.resume_from_checkpoint)
+
+            if path is None:
+                accelerator.print(
+                    f"Checkpoint '{self.runner_config.resume_from_checkpoint}' does not exist. "
+                    "Starting a new training run."
+                )
+                self.runner_config.resume_from_checkpoint = None
+                initial_global_step = 0
+            else:
+                accelerator.print(f"Resuming from checkpoint {path}")
+                accelerator.load_state(os.path.join(self.runner_config.storage_path, path))
+                global_step = int(path.split("-")[1])
+
+                initial_global_step = global_step
+        else:
+            initial_global_step = 0
 
         progress_bar = tqdm(
             range(0, self.runner_config.max_steps),
@@ -341,7 +366,7 @@ class VAETrainer(Runner):
         random.shuffle(video_paths)
 
         # TODO: make this configurable
-        train_video_paths = video_paths[:-1024]
+        train_video_paths = video_paths[:-4096]
         val_video_paths = video_paths[len(train_video_paths):]
 
         train_dataset = VideoDataset(
