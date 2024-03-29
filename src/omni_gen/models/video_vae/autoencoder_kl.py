@@ -188,7 +188,7 @@ class AutoencoderKL(nn.Module):
             samples=samples,
             posteriors=posteriors,
             rec_samples=rec_samples,
-            last_layer_weight=self.decoder.conv_out.conv.weight,
+            last_layer_weight=self.decoder.conv_out.weight,
             gan_stage=gan_stage,
         )
 
@@ -204,7 +204,7 @@ class AutoencoderKL(nn.Module):
             samples=samples,
             posteriors=posteriors,
             rec_samples=rec_samples,
-            last_layer_weight=self.decoder.conv_out.conv.weight,
+            last_layer_weight=self.decoder.conv_out.weight,
             gan_stage="none",
         )
 

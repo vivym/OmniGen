@@ -87,19 +87,20 @@ class Decoder(nn.Module):
         for i, up_block_type in enumerate(up_block_types):
             input_channels = output_channels
             output_channels = reversed_block_out_channels[i]
-            is_first_block = i == 0
+            # is_first_block = i == 0
+            is_final_block = i == len(block_out_channels) - 1
 
             up_block = get_up_block(
                 up_block_type,
                 in_channels=input_channels,
                 out_channels=output_channels,
-                num_layers=layers_per_block + 1,    # TODO: check this
+                num_layers=layers_per_block + 1,
                 act_fn=act_fn,
                 norm_num_groups=norm_num_groups,
                 norm_eps=1e-6,
                 num_attention_heads=num_attention_heads,
                 add_gc_block=use_gc_blocks[i],
-                add_upsample=not is_first_block,
+                add_upsample=not is_final_block,
             )
             self.up_blocks.append(up_block)
 
@@ -116,9 +117,7 @@ class Decoder(nn.Module):
         # x: (B, C, T, H, W)
         x = self.conv_in(x)
 
-        upscale_dtype = next(iter(self.up_blocks.parameters())).dtype
         x = self.mid_block(x)
-        x = x.to(upscale_dtype) # TODO: check this
 
         for up_block in self.up_blocks:
             x = up_block(x)

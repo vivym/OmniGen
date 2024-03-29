@@ -38,9 +38,11 @@ class SpatialDownsampler3D(Downsampler):
             out_channels=out_channels,
             kernel_size=3,
             stride=(1, 2, 2),
+            padding=0,
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = F.pad(x, (0, 1, 0, 1))
         return self.conv(x)
 
 
@@ -84,9 +86,11 @@ class SpatialTemporalDownsampler3D(Downsampler):
             out_channels=out_channels,
             kernel_size=3,
             stride=(2, 2, 2),
+            padding=0,
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = F.pad(x, (0, 1, 0, 1))
         return self.conv(x)
 
 

@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from einops import rearrange, repeat
 
 from .common import CausalConv3d
@@ -26,17 +27,36 @@ class SpatialUpsampler3D(Upsampler):
 
         self.conv = CausalConv3d(
             in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=3,
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = F.interpolate(x, scale_factor=(1, 2, 2), mode="nearest")
+        x = self.conv(x)
+        return x
+
+
+class SpatialUpsamplerD2S3D(Upsampler):
+    def __init__(self, in_channels: int, out_channels: int | None = None):
+        super().__init__(spatial_upsample_factor=2)
+
+        if out_channels is None:
+            out_channels = in_channels
+
+        self.conv = CausalConv3d(
+            in_channels=in_channels,
             out_channels=out_channels * 4,
             kernel_size=3,
         )
 
-        o, i, t, h, w = self.conv.conv.weight.shape
+        o, i, t, h, w = self.conv.weight.shape
         conv_weight = torch.empty(o // 4, i, t, h, w)
         nn.init.kaiming_normal_(conv_weight)
         conv_weight = repeat(conv_weight, "o ... -> (o 4) ...")
-        self.conv.conv.weight.data.copy_(conv_weight)
+        self.conv.weight.data.copy_(conv_weight)
 
-        nn.init.zeros_(self.conv.conv.bias)
+        nn.init.zeros_(self.conv.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.conv(x)
@@ -56,17 +76,42 @@ class TemporalUpsampler3D(Upsampler):
 
         self.conv = CausalConv3d(
             in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=3,
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.shape[2] > 1:
+            first_frame, x = x[:, :, :1], x[:, :, 1:]
+            x = F.interpolate(x, scale_factor=(2, 1, 1), mode="trilinear")
+            x = torch.cat([first_frame, x], dim=2)
+        x = self.conv(x)
+        return x
+
+
+class TemporalUpsamplerD2S3D(Upsampler):
+    def __init__(self, in_channels: int, out_channels: int | None = None):
+        super().__init__(
+            spatial_upsample_factor=1,
+            temporal_upsample_factor=2,
+        )
+
+        if out_channels is None:
+            out_channels = in_channels
+
+        self.conv = CausalConv3d(
+            in_channels=in_channels,
             out_channels=out_channels * 2,
             kernel_size=3,
         )
 
-        o, i, t, h, w = self.conv.conv.weight.shape
+        o, i, t, h, w = self.conv.weight.shape
         conv_weight = torch.empty(o // 2, i, t, h, w)
         nn.init.kaiming_normal_(conv_weight)
         conv_weight = repeat(conv_weight, "o ... -> (o 2) ...")
-        self.conv.conv.weight.data.copy_(conv_weight)
+        self.conv.weight.data.copy_(conv_weight)
 
-        nn.init.zeros_(self.conv.conv.bias)
+        nn.init.zeros_(self.conv.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.conv(x)
@@ -87,17 +132,43 @@ class SpatialTemporalUpsampler3D(Upsampler):
 
         self.conv = CausalConv3d(
             in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=3,
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = F.interpolate(x, scale_factor=(1, 2, 2), mode="nearest")
+        x = self.conv(x)
+        if x.shape[2] > 1:
+            first_frame, x = x[:, :, :1], x[:, :, 1:]
+            x = F.interpolate(x, scale_factor=(2, 1, 1), mode="trilinear")
+            x = torch.cat([first_frame, x], dim=2)
+        return x
+
+
+class SpatialTemporalUpsamplerD2S3D(Upsampler):
+    def __init__(self, in_channels: int, out_channels: int | None = None):
+        super().__init__(
+            spatial_upsample_factor=2,
+            temporal_upsample_factor=2,
+        )
+
+        if out_channels is None:
+            out_channels = in_channels
+
+        self.conv = CausalConv3d(
+            in_channels=in_channels,
             out_channels=out_channels * 8,
             kernel_size=3,
         )
 
-        o, i, t, h, w = self.conv.conv.weight.shape
+        o, i, t, h, w = self.conv.weight.shape
         conv_weight = torch.empty(o // 8, i, t, h, w)
         nn.init.kaiming_normal_(conv_weight)
         conv_weight = repeat(conv_weight, "o ... -> (o 8) ...")
-        self.conv.conv.weight.data.copy_(conv_weight)
+        self.conv.weight.data.copy_(conv_weight)
 
-        nn.init.zeros_(self.conv.conv.bias)
+        nn.init.zeros_(self.conv.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.conv(x)

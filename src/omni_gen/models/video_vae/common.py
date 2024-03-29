@@ -8,20 +8,17 @@ from einops import rearrange, repeat
 from .activations import get_activation
 
 
-class CausalConv3d(nn.Module):
+class CausalConv3d(nn.Conv3d):
     def __init__(
         self,
         in_channels: int,
         out_channels: int,
         kernel_size: int | tuple[int, int, int],
         stride: int | tuple[int, int, int] = 1,
+        padding: int | tuple[int, int, int] | None = None,  # TODO: change it to 0.
         dilation: int | tuple[int, int, int] = 1,
         **kwargs,
     ):
-        super().__init__()
-
-        kwargs.pop("padding", None)
-
         kernel_size = kernel_size if isinstance(kernel_size, tuple) else (kernel_size,) * 3
         assert len(kernel_size) == 3, f"Kernel size must be a 3-tuple, got {kernel_size} instead."
 
@@ -36,12 +33,18 @@ class CausalConv3d(nn.Module):
         t_dilation, h_dilation, w_dilation = dilation
 
         t_pad = (t_ks - 1) * t_dilation
-        h_pad = math.ceil(((h_ks - 1) * h_dilation + (1 - h_stride)) / 2)
-        w_pad = math.ceil(((w_ks - 1) * w_dilation + (1 - w_stride)) / 2)
+        # TODO: align with SD
+        if padding is None:
+            h_pad = math.ceil(((h_ks - 1) * h_dilation + (1 - h_stride)) / 2)
+            w_pad = math.ceil(((w_ks - 1) * w_dilation + (1 - w_stride)) / 2)
+        elif isinstance(padding, int):
+            h_pad = w_pad = padding
+        else:
+            assert NotImplementedError
 
         self.temporal_padding = t_pad
 
-        self.conv = nn.Conv3d(
+        super().__init__(
             in_channels=in_channels,
             out_channels=out_channels,
             kernel_size=kernel_size,
@@ -56,9 +59,9 @@ class CausalConv3d(nn.Module):
         x = F.pad(
             x,
             pad=(0, 0, 0, 0, self.temporal_padding, 0),
-            # mode="replicate",     # TODO: check if this is necessary
+            mode="replicate",     # TODO: check if this is necessary
         )
-        return self.conv(x)
+        return super().forward(x)
 
 
 class ResidualBlock2D(nn.Module):

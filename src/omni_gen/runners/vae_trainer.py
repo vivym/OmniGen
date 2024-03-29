@@ -106,7 +106,8 @@ class VAETrainer(Runner):
                 dirs = sorted(dirs, key=lambda x: int(x.split("-")[1]))
                 path = dirs[-1] if len(dirs) > 0 else None
             else:
-                path = os.path.basename(self.runner_config.resume_from_checkpoint)
+                # path = os.path.basename(self.runner_config.resume_from_checkpoint)
+                path = self.runner_config.resume_from_checkpoint
 
             if path is None:
                 accelerator.print(
@@ -116,9 +117,11 @@ class VAETrainer(Runner):
                 self.runner_config.resume_from_checkpoint = None
                 initial_global_step = 0
             else:
-                accelerator.print(f"Resuming from checkpoint {path}")
-                accelerator.load_state(os.path.join(self.runner_config.storage_path, path))
-                global_step = int(path.split("-")[1])
+                # accelerator.print(f"Resuming from checkpoint {path}")
+                print(f"Resuming from checkpoint {path}")
+                # accelerator.load_state(os.path.join(self.runner_config.storage_path, path))
+                accelerator.load_state(path, strict=False)
+                global_step = int(path.split("-")[-1])
 
                 initial_global_step = global_step
         else:

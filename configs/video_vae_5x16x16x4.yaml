@@ -14,23 +14,21 @@ model:
     - SpatialTemporalDownBlock3D
     - SpatialTemporalDownBlock3D
     - SpatialTemporalDownBlock3D
-    - SpatialTemporalDownBlock3D
   up_block_types:
-    - SpatialTemporalUpBlock3D
-    - SpatialTemporalUpBlock3D
-    - SpatialTemporalUpBlock3D
-    - SpatialTemporalUpBlock3D
     - SpatialUpBlock3D
+    - SpatialTemporalUpBlock3D
+    - SpatialTemporalUpBlock3D
+    - SpatialTemporalUpBlock3D
   block_out_channels:
     - 128
     - 256
-    - 256
     - 512
     - 512
-  layers_per_block: 4
-  latent_channels: 32
+  mid_block_use_attention: True
+  layers_per_block: 2
+  latent_channels: 4
   reconstruction_loss_type: l1
-  reconstruction_loss_weight: 5.0
+  reconstruction_loss_weight: 1.0
   perceptual_loss_weight: 1.0
   kl_loss_weight: 0.00001
   discriminator_loss_weight: 0.5
@@ -50,7 +48,7 @@ runner:
   runner_cls_path: omni_gen.runners.vae_trainer.VAETrainer
   name: VideoVAE
   num_devices: 8
-  max_steps: 1_000_000
+  max_steps: 100_000
   train_batch_size: 2
   val_batch_size: 2
   seed: 233
@@ -59,8 +57,7 @@ runner:
   zero_stage: 2
   gradient_checkpointing: False
   mixed_precision: bf16
-  validation_every_n_steps: 250
-  checkpointing_every_n_steps: 250
-  discriminator_start_steps: 3000
+  validation_every_n_steps: 500
+  checkpointing_every_n_steps: 1000
+  discriminator_start_steps: 300000
   log_with: wandb
-  resume_from_checkpoint: /home/mingyang/ray_results/VideoVAE/TorchTrainer_ef454_00000_0_2024-03-27_18-29-47/outputs/checkpoint-00003000

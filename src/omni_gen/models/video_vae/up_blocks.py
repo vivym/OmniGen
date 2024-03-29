@@ -134,14 +134,14 @@ class SpatialUpBlock3D(nn.Module):
             )
 
     def forward(self, x: torch.FloatTensor) -> torch.FloatTensor:
-        if self.upsampler is not None:
-            x = self.upsampler(x)
+        for conv in self.convs:
+            x = conv(x)
 
         if self.gc_block is not None:
             x = self.gc_block(x)
 
-        for conv in self.convs:
-            x = conv(x)
+        if self.upsampler is not None:
+            x = self.upsampler(x)
 
         return x
 
@@ -162,16 +162,6 @@ class SpatialAttnUpBlock3D(nn.Module):
         add_upsample: bool = True,
     ):
         super().__init__()
-
-        if add_upsample:
-            self.upsampler = SpatialUpsampler3D(in_channels, in_channels)
-        else:
-            self.upsampler = None
-
-        if add_gc_block:
-            self.gc_block = GlobalContextBlock(in_channels, in_channels, fusion_type="mul")
-        else:
-            self.gc_block = None
 
         self.convs = nn.ModuleList([])
         self.attentions = nn.ModuleList([])
@@ -195,22 +185,33 @@ class SpatialAttnUpBlock3D(nn.Module):
                     head_dim=attention_head_dim,
                     bias=True,
                     upcast_softmax=True,
+                    norm_num_groups=norm_num_groups,
                     eps=norm_eps,
                     rescale_output_factor=output_scale_factor,
                     residual_connection=True,
                 )
             )
 
+        if add_gc_block:
+            self.gc_block = GlobalContextBlock(out_channels, out_channels, fusion_type="mul")
+        else:
+            self.gc_block = None
+
+        if add_upsample:
+            self.upsampler = SpatialUpsampler3D(out_channels, out_channels)
+        else:
+            self.upsampler = None
+
     def forward(self, x: torch.FloatTensor) -> torch.FloatTensor:
-        if self.upsampler is not None:
-            x = self.upsampler(x)
+        for conv, attn in zip(self.convs, self.attentions):
+            x = conv(x)
+            x = attn(x)
 
         if self.gc_block is not None:
             x = self.gc_block(x)
 
-        for conv, attn in zip(self.convs, self.attentions):
-            x = conv(x)
-            x = attn(x)
+        if self.upsampler is not None:
+            x = self.upsampler(x)
 
         return x
 
@@ -231,16 +232,6 @@ class TemporalUpBlock3D(nn.Module):
     ):
         super().__init__()
 
-        if add_upsample:
-            self.upsampler = TemporalUpsampler3D(in_channels, in_channels)
-        else:
-            self.upsampler = None
-
-        if add_gc_block:
-            self.gc_block = GlobalContextBlock(in_channels, in_channels, fusion_type="mul")
-        else:
-            self.gc_block = None
-
         self.convs = nn.ModuleList([])
         for i in range(num_layers):
             in_channels = in_channels if i == 0 else out_channels
@@ -256,15 +247,25 @@ class TemporalUpBlock3D(nn.Module):
                 )
             )
 
+        if add_gc_block:
+            self.gc_block = GlobalContextBlock(out_channels, out_channels, fusion_type="mul")
+        else:
+            self.gc_block = None
+
+        if add_upsample:
+            self.upsampler = TemporalUpsampler3D(out_channels, out_channels)
+        else:
+            self.upsampler = None
+
     def forward(self, x: torch.FloatTensor) -> torch.FloatTensor:
-        if self.upsampler is not None:
-            x = self.upsampler(x)
+        for conv in self.convs:
+            x = conv(x)
 
         if self.gc_block is not None:
             x = self.gc_block(x)
 
-        for conv in self.convs:
-            x = conv(x)
+        if self.upsampler is not None:
+            x = self.upsampler(x)
 
         return x
 
@@ -285,16 +286,6 @@ class TemporalAttnUpBlock3D(nn.Module):
         add_upsample: bool = True,
     ):
         super().__init__()
-
-        if add_upsample:
-            self.upsampler = TemporalUpsampler3D(in_channels, in_channels)
-        else:
-            self.upsampler = None
-
-        if add_gc_block:
-            self.gc_block = GlobalContextBlock(in_channels, in_channels, fusion_type="mul")
-        else:
-            self.gc_block = None
 
         self.convs = nn.ModuleList([])
         self.attentions = nn.ModuleList([])
@@ -318,22 +309,33 @@ class TemporalAttnUpBlock3D(nn.Module):
                     head_dim=attention_head_dim,
                     bias=True,
                     upcast_softmax=True,
+                    norm_num_groups=norm_num_groups,
                     eps=norm_eps,
                     rescale_output_factor=output_scale_factor,
                     residual_connection=True,
                 )
             )
 
+        if add_gc_block:
+            self.gc_block = GlobalContextBlock(out_channels, out_channels, fusion_type="mul")
+        else:
+            self.gc_block = None
+
+        if add_upsample:
+            self.upsampler = TemporalUpsampler3D(out_channels, out_channels)
+        else:
+            self.upsampler = None
+
     def forward(self, x: torch.FloatTensor) -> torch.FloatTensor:
-        if self.upsampler is not None:
-            x = self.upsampler(x)
+        for conv, attn in zip(self.convs, self.attentions):
+            x = conv(x)
+            x = attn(x)
 
         if self.gc_block is not None:
             x = self.gc_block(x)
 
-        for conv, attn in zip(self.convs, self.attentions):
-            x = conv(x)
-            x = attn(x)
+        if self.upsampler is not None:
+            x = self.upsampler(x)
 
         return x
 
@@ -354,16 +356,6 @@ class SpatialTemporalUpBlock3D(nn.Module):
     ):
         super().__init__()
 
-        if add_upsample:
-            self.upsampler = SpatialTemporalUpsampler3D(in_channels, in_channels)
-        else:
-            self.upsampler = None
-
-        if add_gc_block:
-            self.gc_block = GlobalContextBlock(in_channels, in_channels, fusion_type="mul")
-        else:
-            self.gc_block = None
-
         self.convs = nn.ModuleList([])
         for i in range(num_layers):
             in_channels = in_channels if i == 0 else out_channels
@@ -379,14 +371,24 @@ class SpatialTemporalUpBlock3D(nn.Module):
                 )
             )
 
+        if add_gc_block:
+            self.gc_block = GlobalContextBlock(out_channels, out_channels, fusion_type="mul")
+        else:
+            self.gc_block = None
+
+        if add_upsample:
+            self.upsampler = SpatialTemporalUpsampler3D(out_channels, out_channels)
+        else:
+            self.upsampler = None
+
     def forward(self, x: torch.FloatTensor) -> torch.FloatTensor:
-        if self.upsampler is not None:
-            x = self.upsampler(x)
+        for conv in self.convs:
+            x = conv(x)
 
         if self.gc_block is not None:
             x = self.gc_block(x)
 
-        for conv in self.convs:
-            x = conv(x)
+        if self.upsampler is not None:
+            x = self.upsampler(x)
 
         return x
