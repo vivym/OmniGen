@@ -13,6 +13,7 @@ from omni_gen.data.video_dataset import VideoDataset
 from omni_gen.models.video_vae import AutoencoderKL
 from omni_gen.utils import logging
 from omni_gen.utils.ema import EMAModel
+from omni_gen.utils.inflation import inflate_params_from_2d_vae
 from .runner import Runner
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
@@ -438,7 +439,33 @@ class VAETrainer(Runner):
         )
         vae.train()
 
-        # TODO: dtype? (for lpips_metric)
+        if self.model_config.load_from_2d_vae is not None:
+            # with accelerator.main_process_first():
+            #     from diffusers import AutoencoderKL as AutoencoderKL2D
+
+            #     vae_2d = AutoencoderKL2D.from_pretrained(self.model_config.load_from_2d_vae)
+            #     state_dict = inflate_params_from_2d_vae(vae_2d, vae.state_dict())
+            #     missing_keys, unexpected_keys = vae.load_state_dict(state_dict, strict=False)
+
+            #     missing_keys: list[str]
+            #     missing_keys = filter(lambda x: x.startswith("loss."), missing_keys)
+            #     missing_keys = list(missing_keys)
+
+            #     if len(missing_keys) > 0 or len(unexpected_keys) > 0:
+            #         logger.warning(f"Missing keys: {missing_keys}, Unexpected keys: {unexpected_keys}.")
+            #         print(f"Missing keys: {missing_keys}, Unexpected keys: {unexpected_keys}.")
+            state_dict = torch.load(self.model_config.load_from_2d_vae, map_location="cpu")["state_dict"]
+            state_dict = inflate_params_from_2d_vae(vae.state_dict(), state_dict)
+            missing_keys, unexpected_keys = vae.load_state_dict(state_dict, strict=False)
+
+            missing_keys: list[str]
+            missing_keys = filter(lambda x: not x.startswith("loss."), missing_keys)
+            missing_keys = list(missing_keys)
+
+            if len(missing_keys) > 0 or len(unexpected_keys) > 0:
+                logger.warning(f"Missing keys: {missing_keys}, Unexpected keys: {unexpected_keys}.")
+                print(f"Missing keys: {missing_keys}, Unexpected keys: {unexpected_keys}.")
+
         vae.loss.to(device=accelerator.device)
 
         # Create EMA for the vae.

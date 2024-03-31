@@ -15,16 +15,17 @@ model:
     - SpatialTemporalDownBlock3D
     - SpatialTemporalDownBlock3D
   up_block_types:
+    - SpatialTemporalUpBlock3D
+    - SpatialTemporalUpBlock3D
     - SpatialUpBlock3D
-    - SpatialTemporalUpBlock3D
-    - SpatialTemporalUpBlock3D
-    - SpatialTemporalUpBlock3D
+    - SpatialUpBlock3D
   block_out_channels:
     - 128
     - 256
     - 512
     - 512
   mid_block_use_attention: True
+  mid_block_attention_type: spatial
   layers_per_block: 2
   latent_channels: 4
   reconstruction_loss_type: l1
@@ -38,9 +39,10 @@ model:
     - 512
     - 512
     - 512
+  load_from_2d_vae: /home/mingyang/projs/OmniGen/tmp/vae-ft-mse-840000-ema-pruned.ckpt
 
 optimizer:
-  learning_rate: 0.0002
+  learning_rate: 0.000576
   lr_scheduler: cosine
   lr_warmup_steps: 500
 
@@ -51,13 +53,14 @@ runner:
   max_steps: 100_000
   train_batch_size: 2
   val_batch_size: 2
-  seed: 233
+  seed: 23333
   use_ema: True
+  ema_power: 0.75
   gradient_accumulation_steps: 8
   zero_stage: 2
   gradient_checkpointing: False
   mixed_precision: bf16
-  validation_every_n_steps: 500
-  checkpointing_every_n_steps: 1000
+  validation_every_n_steps: 250
+  checkpointing_every_n_steps: 500
   discriminator_start_steps: 300000
   log_with: wandb

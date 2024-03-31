@@ -76,6 +76,8 @@ class ModelConfig:
 
     disc_block_out_channels: tuple[int, ...] = (64,)
 
+    load_from_2d_vae: str | None = None
+
 
 @dataclass
 class OptimizerConfig:
@@ -115,6 +117,10 @@ class RunnerConfig:
     seed: int | None = None
 
     use_ema: bool = False
+
+    ema_decay: float = 0.9999
+
+    ema_power: float = 0.666666
 
     use_xformers: bool = False
 

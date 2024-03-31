@@ -108,16 +108,6 @@ class SpatialUpBlock3D(nn.Module):
     ):
         super().__init__()
 
-        if add_upsample:
-            self.upsampler = SpatialUpsampler3D(in_channels, in_channels)
-        else:
-            self.upsampler = None
-
-        if add_gc_block:
-            self.gc_block = GlobalContextBlock(in_channels, in_channels, fusion_type="mul")
-        else:
-            self.gc_block = None
-
         self.convs = nn.ModuleList([])
         for i in range(num_layers):
             in_channels = in_channels if i == 0 else out_channels
@@ -132,6 +122,16 @@ class SpatialUpBlock3D(nn.Module):
                     output_scale_factor=output_scale_factor,
                 )
             )
+
+        if add_gc_block:
+            self.gc_block = GlobalContextBlock(out_channels, out_channels, fusion_type="mul")
+        else:
+            self.gc_block = None
+
+        if add_upsample:
+            self.upsampler = SpatialUpsampler3D(out_channels, out_channels)
+        else:
+            self.upsampler = None
 
     def forward(self, x: torch.FloatTensor) -> torch.FloatTensor:
         for conv in self.convs:

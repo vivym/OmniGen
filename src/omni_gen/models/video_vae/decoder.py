@@ -87,7 +87,6 @@ class Decoder(nn.Module):
         for i, up_block_type in enumerate(up_block_types):
             input_channels = output_channels
             output_channels = reversed_block_out_channels[i]
-            # is_first_block = i == 0
             is_final_block = i == len(block_out_channels) - 1
 
             up_block = get_up_block(

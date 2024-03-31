@@ -6,7 +6,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 from torchvision import transforms as T
-from PIL import Image
+from torchvision.transforms import _transforms_video as TrV
 
 
 def _frame_to_stamp(nframe, stream) -> int:
@@ -17,6 +17,51 @@ def _frame_to_stamp(nframe, stream) -> int:
         seek_target * (stream.time_base.denominator / stream.time_base.numerator)
     )
     return stamp
+
+
+def short_side_scale(
+    x: torch.Tensor,
+    size: int,
+    interpolation: str = "bilinear",
+) -> torch.Tensor:
+    """
+    Determines the shorter spatial dim of the video (i.e. width or height) and scales
+    it to the given size. To maintain aspect ratio, the longer side is then scaled
+    accordingly.
+    Args:
+        x (torch.Tensor): A video tensor of shape (C, T, H, W) and type torch.float32.
+        size (int): The size the shorter side is scaled to.
+        interpolation (str): Algorithm used for upsampling,
+            options: nearest' | 'linear' | 'bilinear' | 'bicubic' | 'trilinear' | 'area'
+    Returns:
+        An x-like Tensor with scaled spatial dims.
+    """  # noqa
+    assert len(x.shape) == 4
+    assert x.dtype == torch.float32
+    _, _, h, w = x.shape
+    if w < h:
+        new_h = int(math.floor((float(h) / w) * size))
+        new_w = size
+    else:
+        new_h = size
+        new_w = int(math.floor((float(w) / h) * size))
+
+    return torch.nn.functional.interpolate(
+        x, size=(new_h, new_w), mode=interpolation, align_corners=False
+    )
+
+
+class ShortSideScale:
+    def __init__(self, size: int, interpolation: str = "bilinear"):
+        self._size = size
+        self._interpolation = interpolation
+
+    def __call__(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x (torch.Tensor): video tensor with shape (C, T, H, W).
+        """
+        return short_side_scale(x, self._size, self._interpolation)
 
 
 class VideoDataset(Dataset):
@@ -38,10 +83,10 @@ class VideoDataset(Dataset):
         self.training = training
 
         self.transform = T.Compose([
-            T.Resize(spatial_size, antialias=True),
-            T.RandomCrop(spatial_size) if training else T.CenterCrop(spatial_size),
-            T.RandomHorizontalFlip() if training else T.Lambda(lambda x: x),
-            T.ToTensor(),
+            TrV.ToTensorVideo(),
+            ShortSideScale(size=spatial_size),
+            TrV.RandomCropVideo(spatial_size) if training else TrV.CenterCropVideo(spatial_size),
+            TrV.RandomHorizontalFlipVideo(p=0.5) if training else T.Lambda(lambda x: x),
         ])
 
     def __len__(self):
@@ -107,8 +152,6 @@ class VideoDataset(Dataset):
             for frame in packet.decode():
                 if packet.pts and packet.pts >= seek_target:
                     frame = frame.to_ndarray(format="rgb24")
-                    frame = Image.fromarray(frame)
-                    frame = self.transform(frame)
                     frames.append(frame)
                     if len(frames) >= self.num_frames:
                         break
@@ -124,8 +167,9 @@ class VideoDataset(Dataset):
             for _ in range(self.num_frames - len(frames)):
                 frames.append(frames[-1])
 
-        frames = torch.stack(frames, dim=1)
-
+        frames = np.stack(frames, axis=0)
+        frames = torch.from_numpy(frames)
+        frames = self.transform(frames)
         frames = frames * 2 - 1
 
         return {"pixel_values": frames}

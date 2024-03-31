@@ -39,6 +39,8 @@ class VAELoss(nn.Module):
 
         self.logvar = nn.Parameter(torch.full((), init_logvar, dtype=torch.float32))
 
+        self.logvar.requires_grad = False
+
         self.discriminator_2d = Discriminator2D(
             in_channels=disc_in_channels,
             block_out_channels=disc_block_out_channels,
