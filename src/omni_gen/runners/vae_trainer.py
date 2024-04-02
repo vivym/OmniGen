@@ -1,10 +1,15 @@
 import copy
 import os
 import random
+import tempfile
+from pathlib import Path
 
+import ray.train
 import torch
 from accelerate import Accelerator
-from ray.train import CheckpointConfig, ScalingConfig, SyncConfig, RunConfig
+from ray.train import (
+    Checkpoint, CheckpointConfig, FailureConfig, ScalingConfig, SyncConfig, RunConfig
+)
 from ray.train.torch import TorchTrainer
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -21,29 +26,42 @@ logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
 class VAETrainer(Runner):
     def __call__(self):
-        trainer = TorchTrainer(
-            self.train_loop_per_worker,
-            scaling_config=ScalingConfig(
-                trainer_resources={"CPU": self.runner_config.num_cpus_per_worker},
-                num_workers=self.runner_config.num_devices,
-                use_gpu=self.runner_config.num_gpus_per_worker > 0,
-                resources_per_worker={
-                    "CPU": self.runner_config.num_cpus_per_worker,
-                    "GPU": self.runner_config.num_gpus_per_worker,
-                },
-            ),
-            run_config=RunConfig(
-                name=self.runner_config.name,
-                # storage_path=self.runner_config.storage_path,
-                # TODO: failure_config
-                checkpoint_config=CheckpointConfig(),
-                sync_config=SyncConfig(
-                    sync_artifacts=True,
+        storage_path = Path(self.runner_config.storage_path).resolve()
+        experiment_path = storage_path / self.runner_config.name
+
+        if (
+            self.runner_config.resume_from_checkpoint == "latest" and
+            TorchTrainer.can_restore(experiment_path)
+        ):
+            trainer = TorchTrainer.restore(experiment_path)
+        else:
+            trainer = TorchTrainer(
+                self.train_loop_per_worker,
+                scaling_config=ScalingConfig(
+                    trainer_resources={"CPU": self.runner_config.num_cpus_per_worker},
+                    num_workers=self.runner_config.num_devices,
+                    use_gpu=self.runner_config.num_gpus_per_worker > 0,
+                    resources_per_worker={
+                        "CPU": self.runner_config.num_cpus_per_worker,
+                        "GPU": self.runner_config.num_gpus_per_worker,
+                    },
                 ),
-                verbose=self.runner_config.verbose_mode,
-                log_to_file=True,
-            ),
-        )
+                run_config=RunConfig(
+                    name=self.runner_config.name,
+                    storage_path=str(storage_path),
+                    failure_config=FailureConfig(max_failures=self.runner_config.max_failures),
+                    checkpoint_config=CheckpointConfig(
+                        num_to_keep=self.runner_config.num_checkpoints_to_keep,
+                        checkpoint_score_attribute=self.runner_config.checkpointing_score_attribute,
+                        checkpoint_score_order=self.runner_config.checkpointing_score_order,
+                    ),
+                    sync_config=SyncConfig(
+                        sync_artifacts=True,
+                    ),
+                    verbose=self.runner_config.verbose_mode,
+                    log_to_file=True,
+                ),
+            )
 
         trainer.fit()
 
@@ -53,6 +71,12 @@ class VAETrainer(Runner):
 
         accelerator = self.setup_accelerator()
 
+        try:
+            self._train_loop_per_worker(accelerator)
+        finally:
+            accelerator.end_training()
+
+    def _train_loop_per_worker(self, accelerator: Accelerator):
         train_dataloader, val_dataloader = self.setup_dataloader()
 
         vae, ema_vae = self.setup_models(accelerator)
@@ -79,7 +103,7 @@ class VAETrainer(Runner):
                 ("optimizer", self.optimizer_config),
                 ("runner", self.runner_config),
             ]:
-                for k, v in config.items():
+                for k, v in config.__dict__.items():
                     configs[f"{prefix}_{k}"] = v
 
             accelerator.init_trackers(
@@ -96,37 +120,28 @@ class VAETrainer(Runner):
         logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
         logger.info(f"  Gradient Accumulation steps = {self.runner_config.gradient_accumulation_steps}")
         logger.info(f"  Total optimization steps = {self.runner_config.max_steps}")
+
         global_step = 0
-        gan_stage = "none" if self.runner_config.discriminator_start_steps > global_step else "generator"
+        initial_global_step = 0
 
-        if self.runner_config.resume_from_checkpoint is not None:
-            if self.runner_config.resume_from_checkpoint == "latest":
-                # Get the most recent checkpoint
-                dirs = os.listdir(self.runner_config.storage_path)
-                dirs = [d for d in dirs if d.startswith("checkpoint")]
-                dirs = sorted(dirs, key=lambda x: int(x.split("-")[1]))
-                path = dirs[-1] if len(dirs) > 0 else None
-            else:
-                # path = os.path.basename(self.runner_config.resume_from_checkpoint)
-                path = self.runner_config.resume_from_checkpoint
-
-            if path is None:
-                accelerator.print(
-                    f"Checkpoint '{self.runner_config.resume_from_checkpoint}' does not exist. "
-                    "Starting a new training run."
-                )
-                self.runner_config.resume_from_checkpoint = None
-                initial_global_step = 0
-            else:
-                # accelerator.print(f"Resuming from checkpoint {path}")
-                print(f"Resuming from checkpoint {path}")
-                # accelerator.load_state(os.path.join(self.runner_config.storage_path, path))
-                accelerator.load_state(path, strict=False)
-                global_step = int(path.split("-")[-1])
-
-                initial_global_step = global_step
+        if (
+            self.runner_config.resume_from_checkpoint is not None and
+            self.runner_config.resume_from_checkpoint != "latest" and
+            Path(self.runner_config.resume_from_checkpoint).exists()
+        ):
+            checkpoint = Checkpoint.from_directory(self.runner_config.resume_from_checkpoint)
         else:
-            initial_global_step = 0
+            checkpoint: Checkpoint | None = ray.train.get_checkpoint()
+
+        if checkpoint is not None:
+            with checkpoint.as_directory() as checkpoint_dir:
+                accelerator.load_state(checkpoint_dir)
+
+        if lr_scheduler.last_epoch > 0:
+            global_step = lr_scheduler.last_epoch // self.runner_config.gradient_accumulation_steps + 1
+            initial_global_step = global_step
+
+        gan_stage = "none" if self.runner_config.discriminator_start_steps > global_step else "generator"
 
         progress_bar = tqdm(
             range(0, self.runner_config.max_steps),
@@ -209,21 +224,20 @@ class VAETrainer(Runner):
 
                 progress_bar.set_postfix(**logs)
 
-                if (
-                    accelerator.sync_gradients and \
-                    self.runner_config.checkpointing_every_n_steps is not None and \
-                    global_step % self.runner_config.checkpointing_every_n_steps == 0
-                ):
-                    save_path = os.path.join(self.runner_config.storage_path, f"checkpoint-{global_step:08d}")
-                    accelerator.save_state(save_path)
-                    logger.info(f"Saved state to {save_path}")
-
-                if (
+                do_validation = (
                     accelerator.sync_gradients and \
                     self.runner_config.validation_every_n_steps is not None and \
                     global_step % self.runner_config.validation_every_n_steps == 0
-                ):
-                    self.validation_loop(
+                )
+
+                do_checkpointing = (
+                    accelerator.sync_gradients and \
+                    self.runner_config.checkpointing_every_n_steps is not None and \
+                    global_step % self.runner_config.checkpointing_every_n_steps == 0
+                )
+
+                if do_validation or do_checkpointing:
+                    val_metrics = self.validation_loop(
                         accelerator=accelerator,
                         val_dataloader=val_dataloader,
                         vae=vae,
@@ -232,17 +246,23 @@ class VAETrainer(Runner):
                         global_step=global_step,
                     )
 
+                if do_checkpointing:
+                    with tempfile.TemporaryDirectory() as temp_checkpoint_dir:
+                        accelerator.save_state(temp_checkpoint_dir)
+                        logger.info(f"Saved state to {temp_checkpoint_dir}")
+                        checkpoint = Checkpoint.from_directory(temp_checkpoint_dir)
+                        ray.train.report(val_metrics, checkpoint=checkpoint)
+
                 if global_step >= self.runner_config.max_steps:
                     done = True
                     break
 
-            if self.runner_config.checkpointing_every_n_steps is None:
-                save_path = os.path.join(self.runner_config.storage_path, f"checkpoint-{global_step:08d}")
-                accelerator.save_state(save_path)
-                logger.info(f"Saved state to {save_path}")
+            do_validation = self.runner_config.checkpointing_every_n_steps is None
 
-            if self.runner_config.validation_every_n_steps is None:
-                self.validation_loop(
+            do_checkpointing = self.runner_config.checkpointing_every_n_steps is None
+
+            if do_validation or do_checkpointing:
+                val_metrics = self.validation_loop(
                     accelerator=accelerator,
                     val_dataloader=val_dataloader,
                     vae=vae,
@@ -251,7 +271,12 @@ class VAETrainer(Runner):
                     global_step=global_step,
                 )
 
-        accelerator.end_training()
+            if do_checkpointing:
+                with tempfile.TemporaryDirectory() as temp_checkpoint_dir:
+                    accelerator.save_state(temp_checkpoint_dir)
+                    logger.info(f"Saved state to {temp_checkpoint_dir}")
+                    checkpoint = Checkpoint.from_directory(temp_checkpoint_dir)
+                    ray.train.report(val_metrics, checkpoint=checkpoint)
 
     def validation_loop(
         self,
@@ -261,7 +286,7 @@ class VAETrainer(Runner):
         ema_vae: EMAModel | None,
         dtype: torch.dtype,
         global_step: int,
-    ):
+    ) -> dict[str, float]:
         logger.info("Running validation...")
 
         if self.runner_config.use_ema:
@@ -302,11 +327,11 @@ class VAETrainer(Runner):
             num_samples: torch.Tensor = accelerator.gather(num_samples)
             num_samples = num_samples.sum().cpu()
 
-            log_dict = {k: v.cpu().sum() / num_samples for k, v in log_dict.items()}
+            log_dict_cpu = {k: (v.cpu().sum() / num_samples).item() for k, v in log_dict.items()}
             accelerator.log(
                 {
                     f"val/{k}": v
-                    for k, v in log_dict.items()
+                    for k, v in log_dict_cpu.items()
                 },
                 step=global_step,
             )
@@ -358,6 +383,8 @@ class VAETrainer(Runner):
 
         if self.runner_config.use_ema:
             ema_vae.restore(vae.parameters())
+
+        return log_dict_cpu
 
     def setup_dataloader(self) -> tuple[DataLoader, DataLoader]:
         video_paths = []
@@ -440,20 +467,6 @@ class VAETrainer(Runner):
         vae.train()
 
         if self.model_config.load_from_2d_vae is not None:
-            # with accelerator.main_process_first():
-            #     from diffusers import AutoencoderKL as AutoencoderKL2D
-
-            #     vae_2d = AutoencoderKL2D.from_pretrained(self.model_config.load_from_2d_vae)
-            #     state_dict = inflate_params_from_2d_vae(vae_2d, vae.state_dict())
-            #     missing_keys, unexpected_keys = vae.load_state_dict(state_dict, strict=False)
-
-            #     missing_keys: list[str]
-            #     missing_keys = filter(lambda x: x.startswith("loss."), missing_keys)
-            #     missing_keys = list(missing_keys)
-
-            #     if len(missing_keys) > 0 or len(unexpected_keys) > 0:
-            #         logger.warning(f"Missing keys: {missing_keys}, Unexpected keys: {unexpected_keys}.")
-            #         print(f"Missing keys: {missing_keys}, Unexpected keys: {unexpected_keys}.")
             state_dict = torch.load(self.model_config.load_from_2d_vae, map_location="cpu")["state_dict"]
             state_dict = inflate_params_from_2d_vae(vae.state_dict(), state_dict)
             missing_keys, unexpected_keys = vae.load_state_dict(state_dict, strict=False)

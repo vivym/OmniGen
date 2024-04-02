@@ -72,10 +72,10 @@ def main():
     if subcommand == "run":
         config = config[subcommand]
 
-        data_config: DataConfig = config["data"]
-        model_config: ModelConfig = config["model"]
-        optimizer_config: OptimizerConfig = config["optimizer"]
-        runner_config: RunnerConfig = config["runner"]
+        data_config = DataConfig(**config["data"].as_dict())
+        model_config = ModelConfig(**config["model"].as_dict())
+        optimizer_config = OptimizerConfig(**config["optimizer"].as_dict())
+        runner_config = RunnerConfig(**config["runner"].as_dict())
 
         # Instantiate the runner
         class_module, class_name = runner_config.runner_cls_path.rsplit(".", 1)

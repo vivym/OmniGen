@@ -1,5 +1,5 @@
 data:
-  dataset_name_or_path: /home/mingyang/projs/OmniGen/data/pexels.txt
+  dataset_name_or_path: data/pexels.txt
   spatial_size: 256
   num_frames: 17
   frame_intervals:
@@ -39,10 +39,10 @@ model:
     - 512
     - 512
     - 512
-  load_from_2d_vae: /home/mingyang/projs/OmniGen/tmp/vae-ft-mse-840000-ema-pruned.ckpt
+  load_from_2d_vae: weights/vae-ft-mse-840000-ema-pruned.ckpt
 
 optimizer:
-  learning_rate: 0.000576
+  learning_rate: 0.0002
   lr_scheduler: cosine
   lr_warmup_steps: 500
 

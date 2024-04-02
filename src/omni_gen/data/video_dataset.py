@@ -4,6 +4,7 @@ import random
 import av
 import numpy as np
 import torch
+import torch.nn as nn
 from torch.utils.data import Dataset
 from torchvision import transforms as T
 from torchvision.transforms import _transforms_video as TrV
@@ -51,9 +52,12 @@ def short_side_scale(
     )
 
 
-class ShortSideScale:
-    def __init__(self, size: int, interpolation: str = "bilinear"):
+class ShortSideScale(nn.Module):
+    def __init__(self, size: int, random_scale: bool = False, interpolation: str = "bilinear"):
+        super().__init__()
+
         self._size = size
+        self._random_scale = random_scale
         self._interpolation = interpolation
 
     def __call__(self, x: torch.Tensor) -> torch.Tensor:
@@ -61,7 +65,14 @@ class ShortSideScale:
         Args:
             x (torch.Tensor): video tensor with shape (C, T, H, W).
         """
-        return short_side_scale(x, self._size, self._interpolation)
+        min_size = min(x.shape[-2:])
+        if min_size > self._size and self._random_scale:
+            scale = random.uniform(self._size / min_size, 1.0)
+            target_size = max(int(round(min_size * scale)), self._size)
+        else:
+            target_size = self._size
+
+        return short_side_scale(x, target_size, self._interpolation)
 
 
 class VideoDataset(Dataset):
@@ -84,7 +95,7 @@ class VideoDataset(Dataset):
 
         self.transform = T.Compose([
             TrV.ToTensorVideo(),
-            ShortSideScale(size=spatial_size),
+            ShortSideScale(size=spatial_size, random_scale=True),
             TrV.RandomCropVideo(spatial_size) if training else TrV.CenterCropVideo(spatial_size),
             TrV.RandomHorizontalFlipVideo(p=0.5) if training else T.Lambda(lambda x: x),
         ])

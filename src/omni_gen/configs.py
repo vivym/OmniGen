@@ -1,4 +1,14 @@
 from dataclasses import dataclass
+from pathlib import Path
+
+
+def normalize_path(original_path: str) -> str:
+    path = Path(original_path)
+
+    if path.exists():
+        return str(path.resolve())
+    else:
+        return original_path
 
 
 @dataclass
@@ -14,6 +24,12 @@ class DataConfig:
     num_frames: int = 17
 
     frame_intervals: int | tuple[int, ...] = 1
+
+    def __post_init__(self):
+        if isinstance(self.dataset_name_or_path, str):
+            self.dataset_name_or_path = normalize_path(self.dataset_name_or_path)
+        else:
+            self.dataset_name_or_path = [normalize_path(path) for path in self.dataset_name_or_path]
 
 
 @dataclass
@@ -77,6 +93,19 @@ class ModelConfig:
     disc_block_out_channels: tuple[int, ...] = (64,)
 
     load_from_2d_vae: str | None = None
+
+    def __post_init__(self):
+        if self.pretrained_model_name_or_path is not None:
+            self.pretrained_model_name_or_path = normalize_path(self.pretrained_model_name_or_path)
+
+        if self.pretrained_vae_model_name_or_path is not None:
+            self.pretrained_vae_model_name_or_path = normalize_path(self.pretrained_vae_model_name_or_path)
+
+        if self.lpips_model_name_or_path is not None:
+            self.lpips_model_name_or_path = normalize_path(self.lpips_model_name_or_path)
+
+        if self.load_from_2d_vae is not None:
+            self.load_from_2d_vae = normalize_path(self.load_from_2d_vae)
 
 
 @dataclass
@@ -152,8 +181,23 @@ class RunnerConfig:
 
     checkpointing_every_n_steps: int | None = None
 
+    num_checkpoints_to_keep: int | None = None
+
+    checkpointing_score_attribute: str | None = None
+
+    checkpointing_score_order: str = "max"
+
     verbose_mode: int = 1   #  0 = silent, 1 = default, 2 = verbose. Defaults to 1.
 
     discriminator_start_steps: int = 1000
 
     resume_from_checkpoint: str | None = None
+
+    max_failures: int = 0
+
+    def __post_init__(self):
+        self.storage_path = normalize_path(self.storage_path)
+        if self.hf_ds_config_path is not None:
+            self.hf_ds_config_path = normalize_path(self.hf_ds_config_path)
+        if self.resume_from_checkpoint is not None:
+            self.resume_from_checkpoint = normalize_path(self.resume_from_checkpoint)
