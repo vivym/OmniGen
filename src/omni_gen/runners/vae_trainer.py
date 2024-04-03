@@ -196,7 +196,7 @@ class VAETrainer(Runner):
                 # Checks if the accelerator has performed an optimization step behind the scenes
                 if accelerator.sync_gradients:
                     if self.runner_config.use_ema:
-                        ema_vae.step(vae.parameters())
+                        ema_vae.step(filter(lambda x: x.requires_grad, vae.parameters()))
 
                     progress_bar.update(1)
                     global_step += 1
@@ -245,6 +245,7 @@ class VAETrainer(Runner):
                         dtype=dtype,
                         global_step=global_step,
                     )
+                    val_metrics["global_step"] = global_step
 
                 if do_checkpointing:
                     with tempfile.TemporaryDirectory() as temp_checkpoint_dir:
@@ -270,6 +271,7 @@ class VAETrainer(Runner):
                     dtype=dtype,
                     global_step=global_step,
                 )
+                val_metrics["global_step"] = global_step
 
             if do_checkpointing:
                 with tempfile.TemporaryDirectory() as temp_checkpoint_dir:
@@ -483,8 +485,8 @@ class VAETrainer(Runner):
 
         # Create EMA for the vae.
         if self.runner_config.use_ema:
-            params = copy.deepcopy(list(vae.parameters()))
-            ema_vae = EMAModel(params, use_ema_warmup=True)
+            params = list(filter(lambda x: x.requires_grad, vae.parameters()))
+            ema_vae = EMAModel(copy.deepcopy(params), use_ema_warmup=True)
             ema_vae.to(accelerator.device)
         else:
             ema_vae = None
