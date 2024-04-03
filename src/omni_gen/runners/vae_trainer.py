@@ -138,7 +138,7 @@ class VAETrainer(Runner):
                 accelerator.load_state(checkpoint_dir)
 
         if lr_scheduler.last_epoch > 0:
-            global_step = lr_scheduler.last_epoch // self.runner_config.gradient_accumulation_steps + 1
+            global_step = lr_scheduler.last_epoch // self.runner_config.gradient_accumulation_steps
             initial_global_step = global_step
 
         gan_stage = "none" if self.runner_config.discriminator_start_steps > global_step else "generator"
