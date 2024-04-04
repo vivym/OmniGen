@@ -80,7 +80,7 @@ class AutoencoderKL(nn.Module):
         latent_channels: int = 8,
         norm_num_groups: int = 32,
         scaling_factor: float = 0.18215,
-        tiling_sample_size: tuple[int, ...] = (17, 256, 256),
+        tile_sample_size: tuple[int, ...] = (17, 256, 256),
         tile_overlap_factor: float = 0.25,
         with_loss: bool = False,
         lpips_model_name_or_path: str = "vivym/lpips",
@@ -151,11 +151,13 @@ class AutoencoderKL(nn.Module):
         self.use_tiling = False
         self.use_slicing = False
 
-        # assert len(tiling_sample_size) == 3, tiling_sample_size
-        # self.tiling_sample_size = tiling_sample_size
-        # self.tile_latent_min_size = tuple(x for x in tiling_sample_size)
-        self.tiling_sample_size = 256
-        self.tile_latent_min_size = 32
+        assert len(tile_sample_size) == 3, tile_sample_size
+        self.tile_sample_size = tile_sample_size
+        self.tile_latent_size = (
+            (tile_sample_size[0] - 1) // self.encoder.temporal_downsample_factor + 1,
+            tile_sample_size[1] // self.encoder.spatial_downsample_factor,
+            tile_sample_size[2] // self.encoder.spatial_downsample_factor,
+        )
         self.tile_overlap_factor = tile_overlap_factor
 
     def enable_tiling(self, use_tiling: bool = True):
@@ -191,7 +193,7 @@ class AutoencoderKL(nn.Module):
     def encode(self, x: torch.Tensor) -> EncoderOutput:
         if (
             self.use_tiling and
-            (x.shape[-1] > self.tile_sample_min_size or x.shape[-2] > self.tile_sample_min_size)
+            (x.shape[-1] > self.tile_sample_size[-1] or x.shape[-2] > self.tile_sample_size[-2])
         ):
             return self._tiled_encode(x)
 
@@ -207,7 +209,7 @@ class AutoencoderKL(nn.Module):
     def decode(self, z: torch.Tensor) -> DecoderOutput:
         if (
             self.use_tiling and
-            (z.shape[-1] > self.tile_latent_min_size or z.shape[-2] > self.tile_latent_min_size)
+            (z.shape[-1] > self.tile_latent_size[-1] or z.shape[-2] > self.tile_latent_size[-2])
         ):
             return self._tiled_decode(z)
 
@@ -276,16 +278,25 @@ class AutoencoderKL(nn.Module):
         return b
 
     def _tiled_encode(self, x: torch.Tensor) -> EncoderOutput:
-        overlap_size = int(self.tile_sample_min_size * (1 - self.tile_overlap_factor))
-        blend_extent = int(self.tile_latent_min_size * self.tile_overlap_factor)
-        row_limit = self.tile_latent_min_size - blend_extent
+        overlap_size = (
+            int(self.tile_sample_size[-2] * (1 - self.tile_overlap_factor)),
+            int(self.tile_sample_size[-1] * (1 - self.tile_overlap_factor)),
+        )
+        blend_extent = (
+            int(self.tile_latent_size[-2] * self.tile_overlap_factor),
+            int(self.tile_latent_size[-1] * self.tile_overlap_factor),
+        )
+        row_limit = (
+            self.tile_latent_size[-2] - blend_extent[-2],
+            self.tile_latent_size[-1] - blend_extent[-1],
+        )
 
         # Split the image into 256x256 tiles and encode them separately.
         rows = []
-        for i in range(0, x.shape[-2], overlap_size):
+        for i in range(0, x.shape[-2], overlap_size[-2]):
             row = []
-            for j in range(0, x.shape[-1], overlap_size):
-                tile = x[..., i:i + self.tile_sample_min_size, j:j + self.tile_sample_min_size]
+            for j in range(0, x.shape[-1], overlap_size[-1]):
+                tile = x[..., i:i + self.tile_sample_size[-2], j:j + self.tile_sample_size[-1]]
                 tile = self.encoder(tile)
                 tile = self.quant_conv(tile)
                 row.append(tile)
@@ -298,10 +309,10 @@ class AutoencoderKL(nn.Module):
                 # blend the above tile and the left tile
                 # to the current tile and add the current tile to the result row
                 if i > 0:
-                    tile = self._blend_v(rows[i - 1][j], tile, blend_extent)
+                    tile = self._blend_v(rows[i - 1][j], tile, blend_extent[-2])
                 if j > 0:
-                    tile = self._blend_h(row[j - 1], tile, blend_extent)
-                result_row.append(tile[..., :row_limit, :row_limit])
+                    tile = self._blend_h(row[j - 1], tile, blend_extent[-1])
+                result_row.append(tile[..., :row_limit[-2], :row_limit[-1]])
             result_rows.append(torch.cat(result_row, dim=-1))
 
         moments = torch.cat(result_rows, dim=-2)
@@ -311,17 +322,26 @@ class AutoencoderKL(nn.Module):
         return EncoderOutput(latent_dist=posterior)
 
     def _tiled_decode(self, z: torch.Tensor) -> DecoderOutput:
-        overlap_size = int(self.tile_latent_min_size * (1 - self.tile_overlap_factor))
-        blend_extent = int(self.tile_sample_min_size * self.tile_overlap_factor)
-        row_limit = self.tile_sample_min_size - blend_extent
+        overlap_size = (
+            int(self.tile_latent_size[-2] * (1 - self.tile_overlap_factor)),
+            int(self.tile_latent_size[-1] * (1 - self.tile_overlap_factor)),
+        )
+        blend_extent = (
+            int(self.tile_sample_size[-2] * self.tile_overlap_factor),
+            int(self.tile_sample_size[-1] * self.tile_overlap_factor),
+        )
+        row_limit = (
+            self.tile_sample_size[-2] - blend_extent[-2],
+            self.tile_sample_size[-1] - blend_extent[-1],
+        )
 
         # Split z into overlapping 32x32 tiles and decode them separately.
         # The tiles have an overlap to avoid seams between tiles.
         rows = []
-        for i in range(0, z.shape[-2], overlap_size):
+        for i in range(0, z.shape[-2], overlap_size[-2]):
             row = []
-            for j in range(0, z.shape[-1], overlap_size):
-                tile = z[..., i:i + self.tile_latent_min_size, j:j + self.tile_latent_min_size]
+            for j in range(0, z.shape[-1], overlap_size[-1]):
+                tile = z[..., i:i + self.tile_latent_size[-2], j:j + self.tile_latent_size[-1]]
                 tile = self.post_quant_conv(tile)
                 decoded = self.decoder(tile)
                 row.append(decoded)
@@ -334,10 +354,10 @@ class AutoencoderKL(nn.Module):
                 # blend the above tile and the left tile
                 # to the current tile and add the current tile to the result row
                 if i > 0:
-                    tile = self._blend_v(rows[i - 1][j], tile, blend_extent)
+                    tile = self._blend_v(rows[i - 1][j], tile, blend_extent[-2])
                 if j > 0:
-                    tile = self._blend_h(row[j - 1], tile, blend_extent)
-                result_row.append(tile[..., :row_limit, :row_limit])
+                    tile = self._blend_h(row[j - 1], tile, blend_extent[-1])
+                result_row.append(tile[..., :row_limit[-2], :row_limit[-1]])
             result_rows.append(torch.cat(result_row, dim=-1))
 
         decoded = torch.cat(result_rows, dim=-2)

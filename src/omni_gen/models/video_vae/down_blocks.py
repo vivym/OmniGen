@@ -7,6 +7,18 @@ from .downsamplers import SpatialDownsampler3D, TemporalDownsampler3D, SpatialTe
 from .gc_block import GlobalContextBlock
 
 
+class DownBlock(nn.Module):
+    def __init__(
+        self,
+        spatial_downsample_factor: int = 1,
+        temporal_downsample_factor: int = 1,
+    ):
+        super().__init__()
+
+        self.spatial_downsample_factor = spatial_downsample_factor
+        self.temporal_downsample_factor = temporal_downsample_factor
+
+
 def get_down_block(
     down_block_type: str,
     in_channels: int,
@@ -20,7 +32,7 @@ def get_down_block(
     output_scale_factor: float = 1.0,
     add_gc_block: bool = False,
     add_downsample: bool = True,
-) -> nn.Module:
+) -> DownBlock:
     if down_block_type == "DownBlock3D":
         return DownBlock3D(
             in_channels=in_channels,
@@ -104,7 +116,7 @@ def get_down_block(
         raise ValueError(f"Unknown down block type: {down_block_type}")
 
 
-class DownBlock3D(nn.Module):
+class DownBlock3D(DownBlock):
     def __init__(
         self,
         in_channels: int,
@@ -152,7 +164,7 @@ class DownBlock3D(nn.Module):
         return x
 
 
-class SpatialDownBlock3D(nn.Module):
+class SpatialDownBlock3D(DownBlock):
     def __init__(
         self,
         in_channels: int,
@@ -190,7 +202,7 @@ class SpatialDownBlock3D(nn.Module):
 
         if add_downsample:
             self.downsampler = SpatialDownsampler3D(out_channels, out_channels)
-            self.spatial_downsample_factor = 2
+            self.spatial_downsample_factor = self.downsampler.spatial_downsample_factor
         else:
             self.downsampler = None
             self.spatial_downsample_factor = 1
@@ -210,7 +222,7 @@ class SpatialDownBlock3D(nn.Module):
         return x
 
 
-class TemporalDownBlock3D(nn.Module):
+class TemporalDownBlock3D(DownBlock):
     def __init__(
         self,
         in_channels: int,
@@ -248,7 +260,7 @@ class TemporalDownBlock3D(nn.Module):
 
         if add_downsample:
             self.downsampler = TemporalDownsampler3D(out_channels, out_channels)
-            self.temporal_downsample_factor = 2
+            self.temporal_downsample_factor = self.downsampler.temporal_downsample_factor
         else:
             self.downsampler = None
             self.temporal_downsample_factor = 1
@@ -268,7 +280,7 @@ class TemporalDownBlock3D(nn.Module):
         return x
 
 
-class SpatialTemporalDownBlock3D(nn.Module):
+class SpatialTemporalDownBlock3D(DownBlock):
     def __init__(
         self,
         in_channels: int,
@@ -306,8 +318,8 @@ class SpatialTemporalDownBlock3D(nn.Module):
 
         if add_downsample:
             self.downsampler = SpatialTemporalDownsampler3D(out_channels, out_channels)
-            self.spatial_downsample_factor = 2
-            self.temporal_downsample_factor = 2
+            self.spatial_downsample_factor = self.downsampler.spatial_downsample_factor
+            self.temporal_downsample_factor = self.downsampler.temporal_downsample_factor
         else:
             self.downsampler = None
             self.spatial_downsample_factor = 1
@@ -326,7 +338,7 @@ class SpatialTemporalDownBlock3D(nn.Module):
         return x
 
 
-class SpatialAttnDownBlock3D(nn.Module):
+class SpatialAttnDownBlock3D(DownBlock):
     def __init__(
         self,
         in_channels: int,
@@ -379,7 +391,7 @@ class SpatialAttnDownBlock3D(nn.Module):
 
         if add_downsample:
             self.downsampler = SpatialDownsampler3D(out_channels, out_channels)
-            self.spatial_downsample_factor = 2
+            self.spatial_downsample_factor = self.downsampler.spatial_downsample_factor
         else:
             self.downsampler = None
             self.spatial_downsample_factor = 1
@@ -400,7 +412,7 @@ class SpatialAttnDownBlock3D(nn.Module):
         return x
 
 
-class TemporalDownBlock3D(nn.Module):
+class TemporalDownBlock3D(DownBlock):
     def __init__(
         self,
         in_channels: int,
@@ -438,7 +450,7 @@ class TemporalDownBlock3D(nn.Module):
 
         if add_downsample:
             self.downsampler = TemporalDownsampler3D(out_channels, out_channels)
-            self.temporal_downsample_factor = 2
+            self.temporal_downsample_factor = self.downsampler.temporal_downsample_factor
         else:
             self.downsampler = None
             self.temporal_downsample_factor = 1
@@ -458,7 +470,7 @@ class TemporalDownBlock3D(nn.Module):
         return x
 
 
-class TemporalAttnDownBlock3D(nn.Module):
+class TemporalAttnDownBlock3D(DownBlock):
     def __init__(
         self,
         in_channels: int,
@@ -511,7 +523,7 @@ class TemporalAttnDownBlock3D(nn.Module):
 
         if add_downsample:
             self.downsampler = TemporalDownsampler3D(out_channels, out_channels)
-            self.temporal_downsample_factor = 2
+            self.temporal_downsample_factor = self.downsampler.temporal_downsample_factor
         else:
             self.downsampler = None
             self.temporal_downsample_factor = 1

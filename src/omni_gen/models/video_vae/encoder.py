@@ -73,6 +73,9 @@ class Encoder(nn.Module):
 
         self.down_blocks = nn.ModuleList([])
 
+        spatial_downsample_factor = 1
+        temporal_downsample_factor = 1
+
         output_channels = block_out_channels[0]
         for i, down_block_type in enumerate(down_block_types):
             input_channels = output_channels
@@ -91,6 +94,8 @@ class Encoder(nn.Module):
                 add_gc_block=use_gc_blocks[i],
                 add_downsample=not is_final_block,
             )
+            spatial_downsample_factor *= down_block.spatial_downsample_factor
+            temporal_downsample_factor *= down_block.temporal_downsample_factor
             self.down_blocks.append(down_block)
 
         self.mid_block = get_mid_block(
@@ -114,6 +119,9 @@ class Encoder(nn.Module):
 
         conv_out_channels = 2 * out_channels if double_z else out_channels
         self.conv_out = CausalConv3d(block_out_channels[-1], conv_out_channels, kernel_size=3)
+
+        self.spatial_downsample_factor = spatial_downsample_factor
+        self.temporal_downsample_factor = temporal_downsample_factor
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: (B, C, T, H, W)
