@@ -21,6 +21,7 @@ class VAELoss(nn.Module):
         discriminator_loss_weight: float = 0.5,
         disc_in_channels: int = 3,
         disc_block_out_channels: tuple[int] = (64,),
+        image_mode: bool = False,
     ):
         super().__init__()
 
@@ -30,6 +31,7 @@ class VAELoss(nn.Module):
         self.nll_loss_weight = nll_loss_weight
         self.kl_loss_weight = kl_loss_weight
         self.discriminator_loss_weight = discriminator_loss_weight
+        self.image_mode = image_mode
 
         # TODO: video perception loss
         # TODO: LeCAM
@@ -46,10 +48,11 @@ class VAELoss(nn.Module):
             block_out_channels=disc_block_out_channels,
         )
 
-        self.discriminator_3d = Discriminator3D(
-            in_channels=disc_in_channels,
-            block_out_channels=disc_block_out_channels,
-        )
+        if not self.image_mode:
+            self.discriminator_3d = Discriminator3D(
+                in_channels=disc_in_channels,
+                block_out_channels=disc_block_out_channels,
+            )
 
     def to(self, *args, **kwargs) -> "VAELoss":
         device = None
@@ -78,6 +81,10 @@ class VAELoss(nn.Module):
         last_layer_weight: nn.Parameter | None = None,
         gan_stage: str = "generator",
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        if self.image_mode:
+            samples = samples[:, :, None]
+            rec_samples = rec_samples[:, :, None]
+
         flattend_samples = rearrange(samples, "b c t h w -> (b t) c h w")
         flattend_rec_samples = rearrange(rec_samples, "b c t h w -> (b t) c h w")
 

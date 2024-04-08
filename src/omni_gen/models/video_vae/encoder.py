@@ -52,6 +52,7 @@ class Encoder(nn.Module):
         act_fn: str = "silu",
         num_attention_heads: int = 1,
         double_z: bool = True,
+        image_mode: bool = False,
     ):
         super().__init__()
 
@@ -65,11 +66,19 @@ class Encoder(nn.Module):
         else:
             use_gc_blocks = [False] * len(down_block_types)
 
-        self.conv_in = CausalConv3d(
-            in_channels,
-            block_out_channels[0],
-            kernel_size=3,
-        )
+        if image_mode:
+            self.conv_in = nn.Conv2d(
+                in_channels,
+                block_out_channels[0],
+                kernel_size=3,
+                padding=1,
+            )
+        else:
+            self.conv_in = CausalConv3d(
+                in_channels,
+                block_out_channels[0],
+                kernel_size=3,
+            )
 
         self.down_blocks = nn.ModuleList([])
 
@@ -118,7 +127,10 @@ class Encoder(nn.Module):
         self.conv_act = get_activation(act_fn)
 
         conv_out_channels = 2 * out_channels if double_z else out_channels
-        self.conv_out = CausalConv3d(block_out_channels[-1], conv_out_channels, kernel_size=3)
+        if image_mode:
+            self.conv_out = nn.Conv2d(block_out_channels[-1], conv_out_channels, kernel_size=3, padding=1)
+        else:
+            self.conv_out = CausalConv3d(block_out_channels[-1], conv_out_channels, kernel_size=3)
 
         self.spatial_downsample_factor = spatial_downsample_factor
         self.temporal_downsample_factor = temporal_downsample_factor

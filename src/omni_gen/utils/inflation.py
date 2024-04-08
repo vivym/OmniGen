@@ -4,6 +4,7 @@ import torch
 def inflate_params_from_2d_vae(
     vae_3d_params: dict[str, torch.Tensor],
     vae_2d_params: dict[str, torch.Tensor],
+    image_mode: bool = False,
 ) -> dict[str, torch.Tensor]:
     inflated_params: dict[str, torch.Tensor] = {}
 
@@ -55,8 +56,11 @@ def inflate_params_from_2d_vae(
             assert shape_3d == shape_2d, f"Shape mismatch for key {key_3d} ({key_2d})"
             inflated_params[key_3d] = w_2d
         elif "conv" in key_2d or "nin_shortcut" in key_2d:
-            new_w = torch.zeros(shape_3d, dtype=w_2d.dtype)
-            new_w[:, :, -1, :, :] = w_2d
+            if image_mode:
+                new_w = w_2d
+            else:
+                new_w = torch.zeros(shape_3d, dtype=w_2d.dtype)
+                new_w[:, :, -1, :, :] = w_2d
             inflated_params[key_3d] = new_w
         elif "attn_1" in key_2d:
             inflated_params[key_3d] = w_2d[..., 0, 0]

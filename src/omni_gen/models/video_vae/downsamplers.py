@@ -46,6 +46,31 @@ class SpatialDownsampler3D(Downsampler):
         return self.conv(x)
 
 
+class SpatialDownsampler2D(Downsampler):
+    def __init__(self, in_channels: int, out_channels: int | None = None):
+        if out_channels is None:
+            out_channels = in_channels
+
+        super().__init__(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            spatial_downsample_factor=2,
+            temporal_downsample_factor=1,
+        )
+
+        self.conv = nn.Conv2d(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=3,
+            stride=2,
+            padding=0,
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = F.pad(x, (0, 1, 0, 1))
+        return self.conv(x)
+
+
 class TemporalDownsampler3D(Downsampler):
     def __init__(self, in_channels: int, out_channels: int | None = None):
         if out_channels is None:

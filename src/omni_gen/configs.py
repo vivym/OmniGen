@@ -74,6 +74,8 @@ class ModelConfig:
 
     scaling_factor: float = 0.18215
 
+    image_mode: bool = False,
+
     lpips_model_name_or_path: str = "vivym/lpips"
 
     init_logvar: float = 0.0

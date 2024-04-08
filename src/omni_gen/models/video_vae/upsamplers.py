@@ -37,6 +37,26 @@ class SpatialUpsampler3D(Upsampler):
         return x
 
 
+class SpatialUpsampler2D(Upsampler):
+    def __init__(self, in_channels: int, out_channels: int | None = None):
+        super().__init__(spatial_upsample_factor=2)
+
+        if out_channels is None:
+            out_channels = in_channels
+
+        self.conv = nn.Conv2d(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=3,
+            padding=1,
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = F.interpolate(x, scale_factor=2, mode="nearest")
+        x = self.conv(x)
+        return x
+
+
 class SpatialUpsamplerD2S3D(Upsampler):
     def __init__(self, in_channels: int, out_channels: int | None = None):
         super().__init__(spatial_upsample_factor=2)

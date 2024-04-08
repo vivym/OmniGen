@@ -342,6 +342,10 @@ class VAETrainer(Runner):
                 samples_to_log = torch.cat(samples_to_log, dim=0)
                 rec_samples_to_log = torch.cat(rec_samples_to_log, dim=0)
 
+                if self.model_config.image_mode:
+                    samples_to_log = samples_to_log[:, :, None]
+                    rec_samples_to_log = rec_samples_to_log[:, :, None]
+
                 samples_to_log = torch.clamp((samples_to_log + 1) / 2 * 255, min=0, max=255)
                 rec_samples_to_log = torch.clamp((rec_samples_to_log + 1) / 2 * 255, min=0, max=255)
 
@@ -456,6 +460,7 @@ class VAETrainer(Runner):
             latent_channels=self.model_config.latent_channels,
             norm_num_groups=self.model_config.norm_num_groups,
             scaling_factor=self.model_config.scaling_factor,
+            image_mode=self.model_config.image_mode,
             with_loss=True,
             lpips_model_name_or_path=self.model_config.lpips_model_name_or_path,
             init_logvar=self.model_config.init_logvar,
@@ -470,7 +475,9 @@ class VAETrainer(Runner):
 
         if self.model_config.load_from_2d_vae is not None:
             state_dict = torch.load(self.model_config.load_from_2d_vae, map_location="cpu")["state_dict"]
-            state_dict = inflate_params_from_2d_vae(vae.state_dict(), state_dict)
+            state_dict = inflate_params_from_2d_vae(
+                vae.state_dict(), state_dict, image_mode=self.model_config.image_mode
+            )
             missing_keys, unexpected_keys = vae.load_state_dict(state_dict, strict=False)
 
             missing_keys: list[str]

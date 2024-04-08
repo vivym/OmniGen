@@ -82,6 +82,7 @@ class AutoencoderKL(nn.Module):
         scaling_factor: float = 0.18215,
         tile_sample_size: tuple[int, ...] = (17, 256, 256),
         tile_overlap_factor: float = 0.25,
+        image_mode: bool = False,
         with_loss: bool = False,
         lpips_model_name_or_path: str = "vivym/lpips",
         init_logvar: float = 0.0,
@@ -113,6 +114,7 @@ class AutoencoderKL(nn.Module):
             act_fn=act_fn,
             num_attention_heads=num_attention_heads,
             double_z=True,
+            image_mode=image_mode,
         )
 
         self.decoder = Decoder(
@@ -129,10 +131,15 @@ class AutoencoderKL(nn.Module):
             norm_num_groups=norm_num_groups,
             act_fn=act_fn,
             num_attention_heads=num_attention_heads,
+            image_mode=image_mode,
         )
 
-        self.quant_conv = nn.Conv3d(2 * latent_channels, 2 * latent_channels, kernel_size=1)
-        self.post_quant_conv = nn.Conv3d(latent_channels, latent_channels, kernel_size=1)
+        if image_mode:
+            self.quant_conv = nn.Conv2d(2 * latent_channels, 2 * latent_channels, kernel_size=1)
+            self.post_quant_conv = nn.Conv2d(latent_channels, latent_channels, kernel_size=1)
+        else:
+            self.quant_conv = nn.Conv3d(2 * latent_channels, 2 * latent_channels, kernel_size=1)
+            self.post_quant_conv = nn.Conv3d(latent_channels, latent_channels, kernel_size=1)
 
         if with_loss:
             self.loss = VAELoss(
@@ -146,6 +153,7 @@ class AutoencoderKL(nn.Module):
                 discriminator_loss_weight=discriminator_loss_weight,
                 disc_in_channels=in_channels,
                 disc_block_out_channels=disc_block_out_channels,
+                image_mode=image_mode,
             )
 
         self.use_tiling = False

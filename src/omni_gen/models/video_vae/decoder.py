@@ -49,6 +49,7 @@ class Decoder(nn.Module):
         norm_num_groups: int = 32,
         act_fn: str = "silu",
         num_attention_heads: int = 1,
+        image_mode: bool = False,
     ):
         super().__init__()
 
@@ -62,11 +63,19 @@ class Decoder(nn.Module):
         else:
             use_gc_blocks = [False] * len(up_block_types)
 
-        self.conv_in = CausalConv3d(
-            in_channels,
-            block_out_channels[-1],
-            kernel_size=3,
-        )
+        if image_mode:
+            self.conv_in = nn.Conv2d(
+                in_channels,
+                block_out_channels[-1],
+                kernel_size=3,
+                padding=1,
+            )
+        else:
+            self.conv_in = CausalConv3d(
+                in_channels,
+                block_out_channels[-1],
+                kernel_size=3,
+            )
 
         self.mid_block = get_mid_block(
             mid_block_type,
@@ -110,7 +119,15 @@ class Decoder(nn.Module):
         )
         self.conv_act = get_activation(act_fn)
 
-        self.conv_out = CausalConv3d(block_out_channels[0], out_channels, kernel_size=3)
+        if image_mode:
+            self.conv_out = nn.Conv2d(
+                block_out_channels[0],
+                out_channels,
+                kernel_size=3,
+                padding=1,
+            )
+        else:
+            self.conv_out = CausalConv3d(block_out_channels[0], out_channels, kernel_size=3)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: (B, C, T, H, W)

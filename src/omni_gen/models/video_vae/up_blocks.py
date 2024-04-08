@@ -2,9 +2,11 @@ import torch
 import torch.nn as nn
 
 from .attention import SpatialAttention, TemporalAttention
-from .common import ResidualBlock3D
+from .common import ResidualBlock2D, ResidualBlock3D
 from .gc_block import GlobalContextBlock
-from .upsamplers import SpatialUpsampler3D, TemporalUpsampler3D, SpatialTemporalUpsampler3D
+from .upsamplers import (
+    SpatialUpsampler2D, SpatialUpsampler3D, TemporalUpsampler3D, SpatialTemporalUpsampler3D
+)
 
 
 def get_up_block(
@@ -23,6 +25,19 @@ def get_up_block(
 ) -> nn.Module:
     if up_block_type == "SpatialUpBlock3D":
         return SpatialUpBlock3D(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            num_layers=num_layers,
+            act_fn=act_fn,
+            norm_num_groups=norm_num_groups,
+            norm_eps=norm_eps,
+            dropout=dropout,
+            output_scale_factor=output_scale_factor,
+            add_gc_block=add_gc_block,
+            add_upsample=add_upsample,
+        )
+    elif up_block_type == "SpatialUpBlock2D":
+        return SpatialUpBlock2D(
             in_channels=in_channels,
             out_channels=out_channels,
             num_layers=num_layers,
@@ -130,6 +145,60 @@ class SpatialUpBlock3D(nn.Module):
 
         if add_upsample:
             self.upsampler = SpatialUpsampler3D(out_channels, out_channels)
+        else:
+            self.upsampler = None
+
+    def forward(self, x: torch.FloatTensor) -> torch.FloatTensor:
+        for conv in self.convs:
+            x = conv(x)
+
+        if self.gc_block is not None:
+            x = self.gc_block(x)
+
+        if self.upsampler is not None:
+            x = self.upsampler(x)
+
+        return x
+
+
+class SpatialUpBlock2D(nn.Module):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        num_layers: int = 1,
+        act_fn: str = "silu",
+        norm_num_groups: int = 32,
+        norm_eps: float = 1e-6,
+        dropout: float = 0.0,
+        output_scale_factor: float = 1.0,
+        add_gc_block: bool = False,
+        add_upsample: bool = True,
+    ):
+        super().__init__()
+
+        self.convs = nn.ModuleList([])
+        for i in range(num_layers):
+            in_channels = in_channels if i == 0 else out_channels
+            self.convs.append(
+                ResidualBlock2D(
+                    in_channels=in_channels,
+                    out_channels=out_channels,
+                    non_linearity=act_fn,
+                    norm_num_groups=norm_num_groups,
+                    norm_eps=norm_eps,
+                    dropout=dropout,
+                    output_scale_factor=output_scale_factor,
+                )
+            )
+
+        if add_gc_block:
+            self.gc_block = GlobalContextBlock(out_channels, out_channels, fusion_type="mul")
+        else:
+            self.gc_block = None
+
+        if add_upsample:
+            self.upsampler = SpatialUpsampler2D(out_channels, out_channels)
         else:
             self.upsampler = None
 

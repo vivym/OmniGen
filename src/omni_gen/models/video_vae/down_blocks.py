@@ -2,8 +2,13 @@ import torch
 import torch.nn as nn
 
 from .attention import SpatialAttention, TemporalAttention
-from .common import ResidualBlock3D
-from .downsamplers import SpatialDownsampler3D, TemporalDownsampler3D, SpatialTemporalDownsampler3D
+from .common import ResidualBlock2D, ResidualBlock3D
+from .downsamplers import (
+    SpatialDownsampler2D,
+    SpatialDownsampler3D,
+    TemporalDownsampler3D,
+    SpatialTemporalDownsampler3D,
+)
 from .gc_block import GlobalContextBlock
 
 
@@ -47,6 +52,19 @@ def get_down_block(
         )
     elif down_block_type == "SpatialDownBlock3D":
         return SpatialDownBlock3D(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            num_layers=num_layers,
+            act_fn=act_fn,
+            norm_num_groups=norm_num_groups,
+            norm_eps=norm_eps,
+            dropout=dropout,
+            output_scale_factor=output_scale_factor,
+            add_gc_block=add_gc_block,
+            add_downsample=add_downsample,
+        )
+    elif down_block_type == "SpatialDownBlock2D":
+        return SpatialDownBlock2D(
             in_channels=in_channels,
             out_channels=out_channels,
             num_layers=num_layers,
@@ -534,6 +552,64 @@ class TemporalAttnDownBlock3D(DownBlock):
         for conv, attn in zip(self.convs, self.attentions):
             x = conv(x)
             x = attn(x)
+
+        if self.gc_block is not None:
+            x = self.gc_block(x)
+
+        if self.downsampler is not None:
+            x = self.downsampler(x)
+
+        return x
+
+
+class SpatialDownBlock2D(DownBlock):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        num_layers: int = 1,
+        act_fn: str = "silu",
+        norm_num_groups: int = 32,
+        norm_eps: float = 1e-6,
+        dropout: float = 0.0,
+        output_scale_factor: float = 1.0,
+        add_gc_block: bool = False,
+        add_downsample: bool = True,
+    ):
+        super().__init__()
+
+        self.convs = nn.ModuleList([])
+        for i in range(num_layers):
+            in_channels = in_channels if i == 0 else out_channels
+            self.convs.append(
+                ResidualBlock2D(
+                    in_channels=in_channels,
+                    out_channels=out_channels,
+                    non_linearity=act_fn,
+                    norm_num_groups=norm_num_groups,
+                    norm_eps=norm_eps,
+                    dropout=dropout,
+                    output_scale_factor=output_scale_factor,
+                )
+            )
+
+        if add_gc_block:
+            self.gc_block = GlobalContextBlock(out_channels, out_channels, fusion_type="mul")
+        else:
+            self.gc_block = None
+
+        if add_downsample:
+            self.downsampler = SpatialDownsampler2D(out_channels, out_channels)
+            self.spatial_downsample_factor = self.downsampler.spatial_downsample_factor
+        else:
+            self.downsampler = None
+            self.spatial_downsample_factor = 1
+
+        self.temporal_downsample_factor = 1
+
+    def forward(self, x: torch.FloatTensor) -> torch.FloatTensor:
+        for conv in self.convs:
+            x = conv(x)
 
         if self.gc_block is not None:
             x = self.gc_block(x)
