@@ -210,3 +210,42 @@ class Discriminator3D(nn.Module):
         x = self.conv_out(x)
 
         return x
+
+
+class Discriminator(nn.Module):
+    def __init__(
+        self,
+        in_channels: int = 3,
+        block_out_channels: tuple[int] = (64,),
+        use_2d: bool = True,
+        use_3d: bool = False,
+    ):
+        super().__init__()
+
+        self.use_2d = use_2d
+        self.use_3d = use_3d
+
+        if use_2d:
+            self.discriminator_2d = Discriminator2D(in_channels, block_out_channels)
+
+        if use_3d:
+            self.discriminator_3d = Discriminator3D(in_channels, block_out_channels)
+
+    def forward(
+        self,
+        x_2d: torch.Tensor | None = None,
+        x_3d: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+        if x_2d is not None:
+            assert self.use_2d
+            logits_2d = self.discriminator_2d(x_2d)
+        else:
+            logits_2d = None
+
+        if x_3d is not None:
+            assert self.use_3d
+            logits_3d = self.discriminator_3d(x_3d)
+        else:
+            logits_3d = None
+
+        return logits_2d, logits_3d

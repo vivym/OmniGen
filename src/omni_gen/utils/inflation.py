@@ -50,18 +50,21 @@ def inflate_params_from_2d_vae(
         shape_2d = w_2d.shape
 
         if "bias" in key_2d:
-            assert shape_3d == shape_2d, f"Shape mismatch for key {key_3d} ({key_2d})"
-            inflated_params[key_3d] = w_2d
+            # assert shape_3d == shape_2d, f"Shape mismatch for key {key_3d} ({key_2d})"
+            if shape_3d == shape_2d:
+                inflated_params[key_3d] = w_2d
         elif "norm" in key_2d:
-            assert shape_3d == shape_2d, f"Shape mismatch for key {key_3d} ({key_2d})"
-            inflated_params[key_3d] = w_2d
+            # assert shape_3d == shape_2d, f"Shape mismatch for key {key_3d} ({key_2d})"
+            if shape_3d == shape_2d:
+                inflated_params[key_3d] = w_2d
         elif "conv" in key_2d or "nin_shortcut" in key_2d:
-            if image_mode:
-                new_w = w_2d
-            else:
-                new_w = torch.zeros(shape_3d, dtype=w_2d.dtype)
-                new_w[:, :, -1, :, :] = w_2d
-            inflated_params[key_3d] = new_w
+            if shape_3d == shape_2d:
+                if image_mode:
+                    new_w = w_2d
+                else:
+                    new_w = torch.zeros(shape_3d, dtype=w_2d.dtype)
+                    new_w[:, :, -1, :, :] = w_2d
+                inflated_params[key_3d] = new_w
         elif "attn_1" in key_2d:
             inflated_params[key_3d] = w_2d[..., 0, 0]
         else:

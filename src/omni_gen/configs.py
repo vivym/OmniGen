@@ -74,7 +74,7 @@ class ModelConfig:
 
     scaling_factor: float = 0.18215
 
-    image_mode: bool = False,
+    image_mode: bool = False
 
     lpips_model_name_or_path: str = "vivym/lpips"
 
@@ -196,6 +196,8 @@ class RunnerConfig:
     resume_from_checkpoint: str | None = None
 
     max_failures: int = 0
+
+    log_every_n_steps: int = 50
 
     def __post_init__(self):
         self.storage_path = normalize_path(self.storage_path)

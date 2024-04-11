@@ -22,7 +22,7 @@ model:
   mid_block_use_attention: True
   mid_block_attention_type: spatial
   layers_per_block: 2
-  latent_channels: 16
+  latent_channels: 4
   image_mode: True
   reconstruction_loss_type: l1
   reconstruction_loss_weight: 1.0
@@ -39,24 +39,25 @@ model:
 
 optimizer:
   learning_rate: 0.0002
-  lr_scheduler: cosine
-  lr_warmup_steps: 2000
+  lr_scheduler: WarmupCosineLR
+  lr_warmup_steps: 500
 
 runner:
-  runner_cls_path: omni_gen.runners.vae_trainer.VAETrainer
+  runner_cls_path: omni_gen.runners.vae_ds_trainer.VAEDeepSpeedTrainer
   name: VideoVAE
   num_devices: 8
-  max_steps: 400_000
-  train_batch_size: 32
-  val_batch_size: 32
+  max_steps: 100_000
+  train_batch_size: 16
+  val_batch_size: 16
   seed: 23333
   use_ema: True
   ema_power: 0.75
   gradient_accumulation_steps: 1
   zero_stage: 2
   gradient_checkpointing: False
-  mixed_precision: bf16
-  validation_every_n_steps: 1000
-  checkpointing_every_n_steps: 2000
-  discriminator_start_steps: 50000000
-  log_with: wandb
+  # mixed_precision: bf16
+  validation_every_n_steps: 10
+  checkpointing_every_n_steps: 10
+  discriminator_start_steps: 0
+  # log_with: wandb
+  log_every_n_steps: 5

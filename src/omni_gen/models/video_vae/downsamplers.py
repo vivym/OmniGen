@@ -143,7 +143,8 @@ class BlurPooling2D(Downsampler):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: (B, C, H, W)
-        return F.conv2d(x, self.filt, stride=2, padding=1, groups=self.in_channels)
+        x = F.pad(x, (1, 1, 1, 1), mode="replicate")
+        return F.conv2d(x, self.filt, stride=2, padding=0, groups=self.in_channels)
 
 
 class BlurPooling3D(Downsampler):
@@ -170,4 +171,5 @@ class BlurPooling3D(Downsampler):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: (B, C, T, H, W)
-        return F.conv3d(x, self.filt, stride=2, padding=1, groups=self.in_channels)
+        x = F.pad(x, (1, 1, 1, 1, 1, 1), mode="replicate")
+        return F.conv3d(x, self.filt, stride=2, padding=0, groups=self.in_channels)

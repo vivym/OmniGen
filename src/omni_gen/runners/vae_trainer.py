@@ -1,12 +1,14 @@
 import copy
+import json
 import os
-import random
 import tempfile
 from pathlib import Path
 
 import ray.train
 import torch
 from accelerate import Accelerator
+from accelerate.scheduler import AcceleratedScheduler
+from datasets import load_dataset
 from ray.train import (
     Checkpoint, CheckpointConfig, FailureConfig, ScalingConfig, SyncConfig, RunConfig
 )
@@ -14,17 +16,18 @@ from ray.train.torch import TorchTrainer
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from omni_gen.data.video_dataset import VideoDataset
+from omni_gen.data.streaming_image_dataset import StreamingImageDataset
+from omni_gen.data.streaming_video_dataset import StreamingVideoDataset
 from omni_gen.models.video_vae import AutoencoderKL
 from omni_gen.utils import logging
 from omni_gen.utils.ema import EMAModel
 from omni_gen.utils.inflation import inflate_params_from_2d_vae
-from .runner import Runner
+from .accelerate_runner import AccelerateRunner
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
 
-class VAETrainer(Runner):
+class VAETrainer(AccelerateRunner):
     def __call__(self):
         storage_path = Path(self.runner_config.storage_path).resolve()
         experiment_path = storage_path / self.runner_config.name
@@ -65,35 +68,31 @@ class VAETrainer(Runner):
 
         trainer.fit()
 
-    def train_loop_per_worker(self):
-        if self.runner_config.allow_tf32:
-            torch.set_float32_matmul_precision("high")
-
-        accelerator = self.setup_accelerator()
-
-        try:
-            self._train_loop_per_worker(accelerator)
-        finally:
-            accelerator.end_training()
-
     def _train_loop_per_worker(self, accelerator: Accelerator):
         train_dataloader, val_dataloader = self.setup_dataloader()
 
         vae, ema_vae = self.setup_models(accelerator)
 
-        params_to_optimize = list(vae.parameters())
-        optimizer, lr_scheduler = self.setup_optimizer(params_to_optimize)
+        vae_params_to_optimize = list(vae.parameters_without_loss())
+        optimizer, lr_scheduler = self.setup_optimizer(vae_params_to_optimize)
+
+        loss_params_to_optimize = list(vae.loss.discriminator_2d.parameters())
+        optimizer_disc, lr_scheduler_disc = self.setup_optimizer(loss_params_to_optimize)
 
         (
-            train_dataloader, val_dataloader, vae, optimizer, lr_scheduler
+            train_dataloader, val_dataloader, vae,
+            optimizer, lr_scheduler, optimizer_disc, lr_scheduler_disc,
         ) = accelerator.prepare(
-            train_dataloader, val_dataloader, vae, optimizer, lr_scheduler
+            train_dataloader, val_dataloader, vae,
+            optimizer, lr_scheduler, optimizer_disc, lr_scheduler_disc,
         )
         train_dataloader: DataLoader
         val_dataloader: DataLoader
         vae: AutoencoderKL
         optimizer: torch.optim.Optimizer
-        lr_scheduler: torch.optim.lr_scheduler.LRScheduler
+        lr_scheduler: AcceleratedScheduler
+        optimizer_disc: torch.optim.Optimizer
+        lr_scheduler_disc: AcceleratedScheduler
 
         if accelerator.is_main_process:
             configs = {}
@@ -137,11 +136,9 @@ class VAETrainer(Runner):
             with checkpoint.as_directory() as checkpoint_dir:
                 accelerator.load_state(checkpoint_dir)
 
-        if lr_scheduler.last_epoch > 0:
-            global_step = lr_scheduler.last_epoch // self.runner_config.gradient_accumulation_steps
+        if lr_scheduler.scheduler.last_epoch > 0:
+            global_step = lr_scheduler.scheduler.last_epoch // self.runner_config.gradient_accumulation_steps
             initial_global_step = global_step
-
-        gan_stage = "none" if self.runner_config.discriminator_start_steps > global_step else "generator"
 
         progress_bar = tqdm(
             range(0, self.runner_config.max_steps),
@@ -164,46 +161,89 @@ class VAETrainer(Runner):
             vae.train()
 
             log_dict: dict[str, torch.Tensor] = {}
+            log_dict_denom: dict[str, int] = {}
 
             for batch in train_dataloader:
                 with accelerator.accumulate(vae):
-                    loss, log_dict_i = vae.training_step(
-                        samples=batch["pixel_values"].to(dtype=dtype),
-                        gan_stage=gan_stage,
+                    samples = batch["pixel_values"].to(dtype=dtype)
+
+                    posteriors = vae.module.encode(samples).latent_dist
+
+                    z = posteriors.sample()
+
+                    rec_samples = vae.module.decode(z).sample
+
+                    loss_ae, loss_nll, log_dict_ae = vae.module.loss.compute_ae_loss(
+                        samples=samples,
+                        posteriors=posteriors,
+                        rec_samples=rec_samples,
                     )
 
-                    # Backpropagate
-                    accelerator.backward(loss)
-                    if accelerator.sync_gradients:
-                        accelerator.clip_grad_norm_(
-                            params_to_optimize, self.runner_config.gradient_clipping
+                    if global_step >= self.runner_config.discriminator_start_steps:
+                        loss_gen, log_dict_gen = vae.module.loss.compute_generator_loss(
+                            rec_samples=rec_samples,
+                            loss_nll=loss_nll,
+                            last_layer_weight=vae.module.decoder.conv_out.weight,
                         )
+                    else:
+                        loss_gen = 0.
+                        log_dict_gen = {}
 
-                    # Gather the values across all processes for logging (if we use distributed training).
-                    for k, v in log_dict_i.items():
-                        if k not in log_dict:
-                            log_dict[k] = 0.0
-
-                        values: torch.Tensor = accelerator.gather(v)
-                        log_dict[k] += values.mean()
+                    loss = loss_ae + loss_gen
+                    optimizer.zero_grad()
+                    accelerator.backward(loss)
+                    if accelerator.sync_gradients and self.runner_config.gradient_clipping is not None:
+                        accelerator.clip_grad_norm_(
+                            vae_params_to_optimize, self.runner_config.gradient_clipping
+                        )
 
                     optimizer.step()
                     lr_scheduler.step()
                     optimizer.zero_grad()
 
-                logs = {"lr": lr_scheduler.get_last_lr()[0]}
+                    if global_step >= self.runner_config.discriminator_start_steps:
+                        loss_disc, log_dict_disc = vae.module.loss.compute_discriminator_loss(
+                            samples=samples,
+                            rec_samples=rec_samples,
+                        )
+
+                        optimizer_disc.zero_grad()
+                        accelerator.backward(loss_disc)
+                        if accelerator.sync_gradients and self.runner_config.gradient_clipping is not None:
+                            accelerator.clip_grad_norm_(
+                                loss_params_to_optimize, self.runner_config.gradient_clipping
+                            )
+
+                        optimizer_disc.step()
+                        lr_scheduler_disc.step()
+                        optimizer_disc.zero_grad()
+                    else:
+                        log_dict_disc = {}
+
+                    for log_dict_i in [log_dict_ae, log_dict_gen, log_dict_disc]:
+                        log_dict_i: dict[str, torch.Tensor]
+                        for k, v in log_dict_i.items():
+                            log_dict[k] = log_dict.get(k, 0) + v
+                            log_dict_denom[k] = log_dict_denom.get(k, 0) + 1
 
                 # Checks if the accelerator has performed an optimization step behind the scenes
                 if accelerator.sync_gradients:
                     if self.runner_config.use_ema:
-                        ema_vae.step(filter(lambda x: x.requires_grad, vae.parameters()))
+                        ema_vae.step(filter(lambda x: x.requires_grad, vae.module.parameters()))
 
                     progress_bar.update(1)
                     global_step += 1
 
-                    for k, v in log_dict.items():
-                        log_dict[k] = v.item() / self.runner_config.gradient_accumulation_steps
+                    gathered_log_dict: dict[str, torch.Tensor] = accelerator.gather(log_dict)
+                    log_dict: dict[str, torch.Tensor] = {}
+                    for k, v in gathered_log_dict.items():
+                        denom = log_dict_denom[k]
+                        log_dict[k] = v.mean().cpu().item() / denom
+
+                    logs = {"lr": lr_scheduler.get_last_lr()[0]}
                     logs.update(log_dict)
+                    progress_bar.set_postfix(**logs)
+
                     accelerator.log({"lr": logs["lr"]}, step=global_step)
                     accelerator.log(
                         {
@@ -213,16 +253,7 @@ class VAETrainer(Runner):
                         step=global_step,
                     )
                     log_dict: dict[str, torch.Tensor] = {}
-
-                    if gan_stage == "generator":
-                        gan_stage = "discriminator"
-                    elif gan_stage == "discriminator":
-                        gan_stage = "generator"
-
-                    if gan_stage == "none" and global_step >= self.runner_config.discriminator_start_steps:
-                        gan_stage = "generator"
-
-                progress_bar.set_postfix(**logs)
+                    log_dict_denom: dict[str, int] = {}
 
                 do_validation = (
                     accelerator.sync_gradients and \
@@ -293,8 +324,8 @@ class VAETrainer(Runner):
 
         if self.runner_config.use_ema:
             # Store the VAE parameters temporarily and load the EMA parameters to perform inference.
-            ema_vae.store(vae.parameters())
-            ema_vae.copy_to(vae.parameters())
+            ema_vae.store(filter(lambda x: x.requires_grad, vae.module.parameters()))
+            ema_vae.copy_to(filter(lambda x: x.requires_grad, vae.module.parameters()))
 
         if vae.training:
             vae.eval()
@@ -388,45 +419,119 @@ class VAETrainer(Runner):
             vae.train()
 
         if self.runner_config.use_ema:
-            ema_vae.restore(vae.parameters())
+            ema_vae.restore(filter(lambda x: x.requires_grad, vae.module.parameters()))
 
         return log_dict_cpu
 
     def setup_dataloader(self) -> tuple[DataLoader, DataLoader]:
-        video_paths = []
         with open(self.data_config.dataset_name_or_path, "r") as f:
-            for line in f:
-                line: str = line.strip()
-                if line:
-                    video_paths.append(line.strip())
+            meta = json.load(f)
 
-        random.shuffle(video_paths)
+        from datasets import IterableDataset
+        if self.model_config.image_mode:
+            train_dataset: IterableDataset = load_dataset(
+                meta["train"][0][0],
+                split="train",
+                streaming=True,
+            )
+            column_names = train_dataset.column_names
+            train_dataset = train_dataset.filter(lambda x: x["status"] == "success")
+            train_dataset = train_dataset.remove_columns(
+                list(filter(lambda x: x != "jpg", column_names))
+            )
+            train_dataset = train_dataset.rename_column("jpg", "pixel_values")
+            train_dataset = train_dataset.shuffle(42, buffer_size=1024)
 
-        # TODO: make this configurable
-        train_video_paths = video_paths[:-4096]
-        val_video_paths = video_paths[len(train_video_paths):]
+            size = self.data_config.spatial_size
 
-        train_dataset = VideoDataset(
-            train_video_paths,
-            spatial_size=self.data_config.spatial_size,
-            num_frames=self.data_config.num_frames,
-            frame_intervals=self.data_config.frame_intervals,
-            training=True,
-        )
+            from omni_gen.data.image_dataset import Resize
+            from torchvision import transforms as T
+            transform = T.Compose([
+                Resize(size=size, random_scale=True),
+                T.RandomCrop(size=size),
+                T.RandomHorizontalFlip(p=0.5),
+                T.ToTensor(),
+            ])
 
-        val_dataset = VideoDataset(
-            val_video_paths,
-            spatial_size=self.data_config.spatial_size,
-            num_frames=self.data_config.num_frames,
-            frame_intervals=self.data_config.frame_intervals,
-            training=False,
-        )
+            from PIL import Image
+            import io
+            def train_map_fn(sample):
+                buf = io.BytesIO(sample["pixel_values"])
+                try:
+                    image = Image.open(buf).convert("RGB")
+                except Exception as e:
+                    image = Image.new("RGB", (size, size))
+                image = transform(image)
+                image = image * 2 - 1
+                sample["pixel_values"] = image
+                return sample
+
+            train_dataset = train_dataset.map(train_map_fn)
+
+            transform = T.Compose([
+                Resize(size=size, random_scale=True),
+                T.CenterCrop(size=size),
+                T.ToTensor(),
+            ])
+
+            val_dataset = load_dataset(
+                meta["val"][0][0],
+                split="train",
+                streaming=True,
+            )
+            val_dataset = val_dataset.rename_column("image", "pixel_values")
+            val_dataset = val_dataset.remove_columns(["id"])
+
+            def val_map_fn(sample):
+                buf = io.BytesIO(sample["pixel_values"])
+                try:
+                    image = Image.open(buf).convert("RGB")
+                except Exception as e:
+                    image = Image.new("RGB", (size, size))
+                image = transform(image)
+                image = image * 2 - 1
+                sample["pixel_values"] = image
+                return sample
+
+            val_dataset = val_dataset.map(val_map_fn)
+
+            # train_dataset = StreamingImageDataset(
+            #     meta["train"],
+            #     spatial_size=self.data_config.spatial_size,
+            #     training=True,
+            #     local_cache_dir="/home2/mingyang/tmp/test1"
+            # )
+
+            # val_dataset = StreamingImageDataset(
+            #     meta["val"],
+            #     spatial_size=self.data_config.spatial_size,
+            #     training=False,
+            #     local_cache_dir="/home2/mingyang/tmp/test2"
+            # )
+        else:
+            train_dataset = StreamingVideoDataset(
+                meta["train"],
+                spatial_size=self.data_config.spatial_size,
+                num_frames=self.data_config.num_frames,
+                frame_intervals=self.data_config.frame_intervals,
+                training=True,
+            )
+
+            val_dataset = StreamingVideoDataset(
+                meta["val"],
+                spatial_size=self.data_config.spatial_size,
+                num_frames=self.data_config.num_frames,
+                frame_intervals=self.data_config.frame_intervals,
+                training=False,
+            )
+
+        train_dataset.with_format("torch")
+        val_dataset.with_format("torch")
 
         train_dataloader = DataLoader(
             train_dataset,
             batch_size=self.runner_config.train_batch_size,
-            shuffle=True,
-            num_workers=4,
+            num_workers=8,
             pin_memory=True,
             drop_last=True,
         )
@@ -434,8 +539,7 @@ class VAETrainer(Runner):
         val_dataloader = DataLoader(
             val_dataset,
             batch_size=self.runner_config.val_batch_size,
-            shuffle=False,
-            num_workers=4,
+            num_workers=8,
             pin_memory=True,
             drop_last=False,
         )

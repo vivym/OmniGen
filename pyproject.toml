@@ -35,6 +35,7 @@ dependencies = [
   "xformers>=0.0.25",
   "wandb>=0.16.5",
   "moviepy>=1.0.3",
+  "litdata>=0.2.3",
 ]
 
 [project.urls]

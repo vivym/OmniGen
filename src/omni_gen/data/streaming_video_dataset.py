@@ -1,94 +1,50 @@
+import io
 import math
 import random
 
 import av
 import numpy as np
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.utils.data import Dataset
+from streaming import Stream, StreamingDataset
 from torchvision import transforms as T
 from torchvision.transforms import _transforms_video as TrV
 
-
-def _frame_to_stamp(nframe, stream) -> int:
-    """Convert frame number to timestamp based on fps of video stream."""
-    fps = stream.guessed_rate.numerator / stream.guessed_rate.denominator
-    seek_target = nframe / fps
-    stamp = math.floor(
-        seek_target * (stream.time_base.denominator / stream.time_base.numerator)
-    )
-    return stamp
+from .video_dataset import _frame_to_stamp, ShortSideScale
 
 
-def short_side_scale(
-    x: torch.Tensor,
-    size: int,
-    interpolation: str = "bilinear",
-) -> torch.Tensor:
-    """
-    Determines the shorter spatial dim of the video (i.e. width or height) and scales
-    it to the given size. To maintain aspect ratio, the longer side is then scaled
-    accordingly.
-    Args:
-        x (torch.Tensor): A video tensor of shape (C, T, H, W) and type torch.float32.
-        size (int): The size the shorter side is scaled to.
-        interpolation (str): Algorithm used for upsampling,
-            options: nearest' | 'linear' | 'bilinear' | 'bicubic' | 'trilinear' | 'area'
-    Returns:
-        An x-like Tensor with scaled spatial dims.
-    """  # noqa
-    assert len(x.shape) == 4
-    assert x.dtype == torch.float32
-    _, _, h, w = x.shape
-    if w < h:
-        new_h = int(math.floor((float(h) / w) * size))
-        new_w = size
-    else:
-        new_h = size
-        new_w = int(math.floor((float(w) / h) * size))
-
-    return F.interpolate(
-        x, size=(new_h, new_w), mode=interpolation, align_corners=False
-    )
-
-
-class ShortSideScale(nn.Module):
-    def __init__(self, size: int, random_scale: bool = False, interpolation: str = "bilinear"):
-        super().__init__()
-
-        self._size = size
-        self._random_scale = random_scale
-        self._interpolation = interpolation
-
-    def __call__(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            x (torch.Tensor): video tensor with shape (C, T, H, W).
-        """
-        min_size = min(x.shape[-2:])
-        if min_size > self._size and self._random_scale:
-            scale = random.uniform(self._size / min_size, 1.0)
-            target_size = max(int(round(min_size * scale)), self._size)
-        else:
-            target_size = self._size
-
-        return short_side_scale(x, target_size, self._interpolation)
-
-
-class VideoDataset(Dataset):
+class StreamingVideoDataset(StreamingDataset):
     def __init__(
         self,
-        video_paths: list[str],
+        streams: list[tuple[str, float]],
         spatial_size: int | tuple[int, int] = 256,
         num_frames: int = 17,
         frame_intervals: int | tuple[int, ...] = 1,
         training: bool = True,
+        local_cache_dir: str | None = None,
+        local_cache_limit: str | None = "100gb",
+        shuffle_algo: str = "py1e",
+        shuffle_seed: int = 233,
     ):
-        if isinstance(frame_intervals, int):
-            frame_intervals = (frame_intervals,)
+        total_weight = sum(weight for _, weight in streams)
 
-        self.video_paths = video_paths
+        streams = [
+            Stream(
+                remote=path,
+                local=local_cache_dir,
+                proportion=weight / total_weight,
+            )
+            for path, weight in streams
+        ]
+
+        super().__init__(
+            streams=streams,
+            cache_limit=local_cache_limit,
+            shuffle=training,
+            shuffle_algo=shuffle_algo,
+            shuffle_seed=shuffle_seed,
+            batching_method="per_stream",
+        )
+
         self.spatial_size = spatial_size
         self.num_frames = num_frames
         if isinstance(frame_intervals, int):
@@ -103,13 +59,11 @@ class VideoDataset(Dataset):
             TrV.RandomHorizontalFlipVideo(p=0.5) if training else T.Lambda(lambda x: x),
         ])
 
-    def __len__(self):
-        return len(self.video_paths)
+    def __getitem__(self, idx: int):
+        obj = super().__getitem__(idx)
 
-    def __getitem__(self, idx: int) -> torch.Tensor:
-        video_path = self.video_paths[idx]
-
-        container = av.open(video_path)
+        video_buf = io.BytesIO(obj["video"])
+        container = av.open(video_buf)
         video_stream = container.streams.video[0]
         total_frames = video_stream.frames
 
@@ -155,7 +109,7 @@ class VideoDataset(Dataset):
         except av.error.FFmpegError:
             seekable = False
             # try again but this time don't seek
-            container = av.open(video_path)
+            container = av.open(video_buf)
             video_stream = container.streams.video[0]
 
         frames = []
@@ -175,7 +129,7 @@ class VideoDataset(Dataset):
                         container.seek(seek_target, stream=video_stream)
 
         if len(frames) == 0:
-            raise ValueError(f"Failed to extract frames from {video_path} frame_interval: {frame_interval} start_frame: {start_frame}")
+            raise ValueError(f"Failed to extract frames from #{obj['id']} frame_interval: {frame_interval} start_frame: {start_frame}")
 
         if len(frames) < self.num_frames:
             for _ in range(self.num_frames - len(frames)):
@@ -186,4 +140,4 @@ class VideoDataset(Dataset):
         frames = self.transform(frames)
         frames = frames * 2 - 1
 
-        return {"pixel_values": frames}
+        return {"pixel_values": obj["video"]}

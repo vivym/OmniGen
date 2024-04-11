@@ -5,7 +5,6 @@ import torch
 import torch.nn as nn
 
 from omni_gen.utils.distributions import DiagonalGaussianDistribution
-from omni_gen.utils.accelerate import apply_forward_hook
 from .decoder import Decoder
 from .encoder import Encoder
 from .vae_loss import VAELoss
@@ -197,7 +196,6 @@ class AutoencoderKL(nn.Module):
         """
         self.use_slicing = False
 
-    @apply_forward_hook
     def encode(self, x: torch.Tensor) -> EncoderOutput:
         if (
             self.use_tiling and
@@ -213,7 +211,6 @@ class AutoencoderKL(nn.Module):
 
         return EncoderOutput(latent_dist=posterior)
 
-    @apply_forward_hook
     def decode(self, z: torch.Tensor) -> DecoderOutput:
         if (
             self.use_tiling and
@@ -227,6 +224,15 @@ class AutoencoderKL(nn.Module):
 
         return DecoderOutput(sample=decoded)
 
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        posteriors = self.encode(x).latent_dist
+
+        z = posteriors.sample()
+
+        rec_samples = self.decode(z).sample
+
+        return posteriors, rec_samples
+
     def parameters_without_loss(self):
         return itertools.chain(
             self.encoder.parameters(),
@@ -235,7 +241,6 @@ class AutoencoderKL(nn.Module):
             self.post_quant_conv.parameters(),
         )
 
-    @apply_forward_hook
     def training_step(
         self,
         samples: torch.Tensor,
@@ -255,7 +260,6 @@ class AutoencoderKL(nn.Module):
             gan_stage=gan_stage,
         )
 
-    @apply_forward_hook
     def validation_step(self, samples: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
         posteriors = self.encode(samples).latent_dist
 

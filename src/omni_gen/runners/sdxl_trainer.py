@@ -16,12 +16,12 @@ from transformers import (
 from tqdm import tqdm
 
 from omni_gen.utils import logging
-from .runner import Runner
+from .accelerate_runner import AccelerateRunner
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
 
-class SDXLTrainer(Runner):
+class SDXLTrainer(AccelerateRunner):
     def __call__(self):
         trainer = TorchTrainer(
             self.train_loop_per_worker,
