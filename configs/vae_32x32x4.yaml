@@ -34,7 +34,6 @@ model:
     - 256
     - 512
     - 512
-    - 512
   load_from_2d_vae: weights/vae-ft-mse-840000-ema-pruned.ckpt
 
 optimizer:
@@ -47,17 +46,17 @@ runner:
   name: VideoVAE
   num_devices: 8
   max_steps: 100_000
-  train_batch_size: 16
-  val_batch_size: 16
+  train_batch_size: 32
+  val_batch_size: 32
   seed: 23333
   use_ema: True
   ema_power: 0.75
   gradient_accumulation_steps: 1
   zero_stage: 2
   gradient_checkpointing: False
-  # mixed_precision: bf16
-  validation_every_n_steps: 10
-  checkpointing_every_n_steps: 10
+  mixed_precision: bf16
+  validation_every_n_steps: 500
+  checkpointing_every_n_steps: 1000
   discriminator_start_steps: 0
-  # log_with: wandb
+  log_with: wandb
   log_every_n_steps: 5

@@ -1,4 +1,3 @@
-import itertools
 from dataclasses import dataclass
 
 import torch
@@ -7,7 +6,6 @@ import torch.nn as nn
 from omni_gen.utils.distributions import DiagonalGaussianDistribution
 from .decoder import Decoder
 from .encoder import Encoder
-from .vae_loss import VAELoss
 
 
 @dataclass
@@ -56,9 +54,6 @@ class AutoencoderKL(nn.Module):
             diffusion model. When decoding, the latents are scaled back to the original scale with the formula: `z = 1
             / scaling_factor * z`. For more details, refer to sections 4.3.2 and D.1 of the [High-Resolution Image
             Synthesis with Latent Diffusion Models](https://arxiv.org/abs/2112.10752) paper.
-        with_loss (`bool`, *optional*, defaults to `False`):
-            Whether to compute the loss during forward pass. If `True`, the forward pass returns a dictionary with
-            the loss and the output. If `False`, the forward pass returns the output.
     """
 
     def __init__(
@@ -79,24 +74,13 @@ class AutoencoderKL(nn.Module):
         latent_channels: int = 8,
         norm_num_groups: int = 32,
         scaling_factor: float = 0.18215,
+        image_mode: bool = False,
         tile_sample_size: tuple[int, ...] = (17, 256, 256),
         tile_overlap_factor: float = 0.25,
-        image_mode: bool = False,
-        with_loss: bool = False,
-        lpips_model_name_or_path: str = "vivym/lpips",
-        init_logvar: float = 0.0,
-        reconstruction_loss_type: str = "l1",
-        reconstruction_loss_weight: float = 1.0,
-        perceptual_loss_weight: float = 1.0,
-        nll_loss_weight: float = 1.0,
-        kl_loss_weight: float = 1.0,
-        discriminator_loss_weight: float = 0.5,
-        disc_block_out_channels: tuple[int] = (64,),
     ):
         super().__init__()
 
         self.scaling_factor = scaling_factor
-        self.with_loss = with_loss
 
         self.encoder = Encoder(
             in_channels=in_channels,
@@ -139,21 +123,6 @@ class AutoencoderKL(nn.Module):
         else:
             self.quant_conv = nn.Conv3d(2 * latent_channels, 2 * latent_channels, kernel_size=1)
             self.post_quant_conv = nn.Conv3d(latent_channels, latent_channels, kernel_size=1)
-
-        if with_loss:
-            self.loss = VAELoss(
-                lpips_model_name_or_path=lpips_model_name_or_path,
-                init_logvar=init_logvar,
-                reconstruction_loss_type=reconstruction_loss_type,
-                reconstruction_loss_weight=reconstruction_loss_weight,
-                perceptual_loss_weight=perceptual_loss_weight,
-                nll_loss_weight=nll_loss_weight,
-                kl_loss_weight=kl_loss_weight,
-                discriminator_loss_weight=discriminator_loss_weight,
-                disc_in_channels=in_channels,
-                disc_block_out_channels=disc_block_out_channels,
-                image_mode=image_mode,
-            )
 
         self.use_tiling = False
         self.use_slicing = False
@@ -232,50 +201,6 @@ class AutoencoderKL(nn.Module):
         rec_samples = self.decode(z).sample
 
         return posteriors, rec_samples
-
-    def parameters_without_loss(self):
-        return itertools.chain(
-            self.encoder.parameters(),
-            self.decoder.parameters(),
-            self.quant_conv.parameters(),
-            self.post_quant_conv.parameters(),
-        )
-
-    def training_step(
-        self,
-        samples: torch.Tensor,
-        gan_stage: str,
-    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        posteriors = self.encode(samples).latent_dist
-
-        z = posteriors.sample()
-
-        rec_samples = self.decode(z).sample
-
-        return self.loss(
-            samples=samples,
-            posteriors=posteriors,
-            rec_samples=rec_samples,
-            last_layer_weight=self.decoder.conv_out.weight,
-            gan_stage=gan_stage,
-        )
-
-    def validation_step(self, samples: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
-        posteriors = self.encode(samples).latent_dist
-
-        z = posteriors.sample()
-
-        rec_samples = self.decode(z).sample
-
-        loss, log_dict = self.loss(
-            samples=samples,
-            posteriors=posteriors,
-            rec_samples=rec_samples,
-            last_layer_weight=self.decoder.conv_out.weight,
-            gan_stage="none",
-        )
-
-        return rec_samples, loss, log_dict
 
     def _blend_v(self, a: torch.Tensor, b: torch.Tensor, blend_extent: int) -> torch.Tensor:
         blend_extent = min(a.shape[-2], b.shape[-2], blend_extent)

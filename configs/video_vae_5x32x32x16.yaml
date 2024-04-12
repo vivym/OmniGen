@@ -1,5 +1,5 @@
 data:
-  dataset_name_or_path: data/pexels.txt
+  dataset_name_or_path: data/videos.json
   spatial_size: 256
   num_frames: 17
   frame_intervals:
@@ -27,7 +27,7 @@ model:
   mid_block_use_attention: True
   mid_block_attention_type: spatial
   layers_per_block: 2
-  latent_channels: 4
+  latent_channels: 16
   reconstruction_loss_type: l1
   reconstruction_loss_weight: 1.0
   perceptual_loss_weight: 1.0
@@ -43,11 +43,11 @@ model:
 
 optimizer:
   learning_rate: 0.0002
-  lr_scheduler: cosine
+  lr_scheduler: WarmupCosineLR
   lr_warmup_steps: 500
 
 runner:
-  runner_cls_path: omni_gen.runners.vae_trainer.VAETrainer
+  runner_cls_path: omni_gen.runners.vae_ds_trainer.VAEDeepSpeedTrainer
   name: VideoVAE
   num_devices: 8
   max_steps: 100_000
@@ -62,5 +62,6 @@ runner:
   mixed_precision: bf16
   validation_every_n_steps: 250
   checkpointing_every_n_steps: 500
-  discriminator_start_steps: 300000
+  discriminator_start_steps: 1000
   log_with: wandb
+  log_every_n_steps: 5

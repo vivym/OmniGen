@@ -39,14 +39,14 @@ model:
 
 optimizer:
   learning_rate: 0.0002
-  lr_scheduler: cosine
-  lr_warmup_steps: 2000
+  lr_scheduler: WarmupCosineLR
+  lr_warmup_steps: 500
 
 runner:
-  runner_cls_path: omni_gen.runners.vae_trainer.VAETrainer
+  runner_cls_path: omni_gen.runners.vae_ds_trainer.VAEDeepSpeedTrainer
   name: VideoVAE
   num_devices: 8
-  max_steps: 400_000
+  max_steps: 100_000
   train_batch_size: 32
   val_batch_size: 32
   seed: 23333
@@ -56,7 +56,8 @@ runner:
   zero_stage: 2
   gradient_checkpointing: False
   mixed_precision: bf16
-  validation_every_n_steps: 1000
-  checkpointing_every_n_steps: 2000
-  discriminator_start_steps: 50000000
+  validation_every_n_steps: 500
+  checkpointing_every_n_steps: 1000
+  discriminator_start_steps: 0
   log_with: wandb
+  log_every_n_steps: 5

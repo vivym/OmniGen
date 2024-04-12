@@ -5,7 +5,7 @@ import random
 import av
 import numpy as np
 import torch
-from streaming import Stream, StreamingDataset
+from litdata import StreamingDataset
 from torchvision import transforms as T
 from torchvision.transforms import _transforms_video as TrV
 
@@ -15,34 +15,18 @@ from .video_dataset import _frame_to_stamp, ShortSideScale
 class StreamingVideoDataset(StreamingDataset):
     def __init__(
         self,
-        streams: list[tuple[str, float]],
+        data_dir: str,
         spatial_size: int | tuple[int, int] = 256,
         num_frames: int = 17,
         frame_intervals: int | tuple[int, ...] = 1,
         training: bool = True,
-        local_cache_dir: str | None = None,
-        local_cache_limit: str | None = "100gb",
-        shuffle_algo: str = "py1e",
-        shuffle_seed: int = 233,
+        seed: int = 233,
+        max_cache_size: int | str = "100GB",
     ):
-        total_weight = sum(weight for _, weight in streams)
-
-        streams = [
-            Stream(
-                remote=path,
-                local=local_cache_dir,
-                proportion=weight / total_weight,
-            )
-            for path, weight in streams
-        ]
-
         super().__init__(
-            streams=streams,
-            cache_limit=local_cache_limit,
-            shuffle=training,
-            shuffle_algo=shuffle_algo,
-            shuffle_seed=shuffle_seed,
-            batching_method="per_stream",
+            input_dir=data_dir,
+            seed=seed,
+            max_cache_size=max_cache_size,
         )
 
         self.spatial_size = spatial_size
@@ -54,12 +38,12 @@ class StreamingVideoDataset(StreamingDataset):
 
         self.transform = T.Compose([
             TrV.ToTensorVideo(),
-            ShortSideScale(size=spatial_size, random_scale=True),
+            ShortSideScale(size=spatial_size, random_scale=True) if training else T.Lambda(lambda x: x),
             TrV.RandomCropVideo(spatial_size) if training else TrV.CenterCropVideo(spatial_size),
             TrV.RandomHorizontalFlipVideo(p=0.5) if training else T.Lambda(lambda x: x),
         ])
 
-    def __getitem__(self, idx: int):
+    def _fetch_item(self, idx: int) -> torch.Tensor:
         obj = super().__getitem__(idx)
 
         video_buf = io.BytesIO(obj["video"])
@@ -140,4 +124,12 @@ class StreamingVideoDataset(StreamingDataset):
         frames = self.transform(frames)
         frames = frames * 2 - 1
 
-        return {"pixel_values": obj["video"]}
+        return frames
+
+    def __getitem__(self, idx: int):
+        try:
+            frames = self._fetch_item(idx)
+        except:
+            frames = torch.zeros((3, self.num_frames, self.spatial_size, self.spatial_size))
+
+        return {"pixel_values": frames}

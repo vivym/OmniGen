@@ -231,6 +231,8 @@ class Discriminator(nn.Module):
         if use_3d:
             self.discriminator_3d = Discriminator3D(in_channels, block_out_channels)
 
+        self.apply(weight_init)
+
     def forward(
         self,
         x_2d: torch.Tensor | None = None,
@@ -249,3 +251,11 @@ class Discriminator(nn.Module):
             logits_3d = None
 
         return logits_2d, logits_3d
+
+
+def weight_init(m: nn.Module):
+    if isinstance(m, (nn.Conv1d, nn.Conv2d, nn.Conv3d)):
+        nn.init.normal_(m.weight.data, 0.0, 0.02)
+    elif isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
+        nn.init.normal_(m.weight.data, 1.0, 0.02)
+        nn.init.constant_(m.bias.data, 0)

@@ -23,7 +23,7 @@ class StreamingImageDataset(StreamingDataset):
         )
 
         self.transform = T.Compose([
-            Resize(size=spatial_size, random_scale=True),   # TODO: make deterministic for validation
+            Resize(size=spatial_size, random_scale=True) if training else T.Lambda(lambda x: x),
             T.RandomCrop(size=spatial_size) if training else T.CenterCrop(size=spatial_size),
             T.RandomHorizontalFlip(p=0.5) if training else T.Lambda(lambda x: x),
             T.ToTensor(),
@@ -33,7 +33,10 @@ class StreamingImageDataset(StreamingDataset):
         sample = super().__getitem__(idx)
 
         buf = io.BytesIO(sample["image"])
-        image = Image.open(buf).convert("RGB")
+        try:
+            image = Image.open(buf).convert("RGB")
+        except Exception:
+            image = Image.new("RGB", (256, 256))
         image = self.transform(image)
         # Normalize to [-1, 1]
         image = image * 2 - 1

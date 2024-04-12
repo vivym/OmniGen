@@ -7,7 +7,6 @@ from pathlib import Path
 import deepspeed
 import ray.train
 import torch
-import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
 from deepspeed.accelerator import get_accelerator
@@ -22,6 +21,7 @@ from ray.train.torch import TorchTrainer
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+import omni_gen.utils.distributed as dist
 from omni_gen.data.streaming_image_dataset import StreamingImageDataset
 from omni_gen.data.streaming_video_dataset import StreamingVideoDataset
 from omni_gen.models.video_vae import AutoencoderKL, Discriminator, LPIPSMetric
@@ -83,6 +83,16 @@ class VAEDeepSpeedTrainer(DeepSpeedRunner):
 
         vae, ema_vae, lpips_metric, discriminator = self.setup_models()
 
+        total_batch_size = (
+            self.runner_config.train_batch_size
+            * self.runner_config.num_devices
+            * self.runner_config.gradient_accumulation_steps
+        )
+
+        if self.runner_config.gradient_clipping is None:
+            gradient_clipping = 0.
+        else:
+            gradient_clipping = self.runner_config.gradient_clipping
         deepspeed_config = {
             "optimizer": {
                 "type": "AdamW",
@@ -94,7 +104,8 @@ class VAEDeepSpeedTrainer(DeepSpeedRunner):
                 },
             },
             "gradient_accumulation_steps": self.runner_config.gradient_accumulation_steps,
-            "gradient_clipping": self.runner_config.gradient_clipping,
+            "gradient_clipping": gradient_clipping,
+            "train_batch_size": total_batch_size,
             "train_micro_batch_size_per_gpu": self.runner_config.train_batch_size,
             "wall_clock_breakdown": False,
             "wandb": {
@@ -162,10 +173,12 @@ class VAEDeepSpeedTrainer(DeepSpeedRunner):
         optimizer: torch.optim.Optimizer
         lr_scheduler: WarmupCosineLR
 
+        disc_deepspeed_config = copy.deepcopy(deepspeed_config)
+        disc_deepspeed_config["wandb"]["enabled"] = False
         discriminator_engine, optimizer_disc, _, _ = deepspeed.initialize(
             model=discriminator,
             model_parameters=discriminator.parameters(),
-            config=deepspeed_config,
+            config=disc_deepspeed_config,
         )
         discriminator_engine: deepspeed.DeepSpeedEngine
         optimizer_disc: torch.optim.Optimizer
@@ -196,12 +209,6 @@ class VAEDeepSpeedTrainer(DeepSpeedRunner):
 
                 wandb.config.update(configs)
 
-        total_batch_size = (
-            self.runner_config.train_batch_size
-            * self.runner_config.num_devices
-            * self.runner_config.gradient_accumulation_steps
-        )
-
         logger.info("***** Running training *****")
         logger.info(f"  Instantaneous batch size per device = {self.runner_config.train_batch_size}")
         logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
@@ -222,7 +229,14 @@ class VAEDeepSpeedTrainer(DeepSpeedRunner):
 
         if checkpoint is not None:
             with checkpoint.as_directory() as checkpoint_dir:
+                # TODO: check return values (`client_state`)
                 vae_engine.load_checkpoint(checkpoint_dir)
+
+                if self.runner_config.use_ema:
+                    ema_ckpt_path = os.path.join(checkpoint_dir, "ema_vae.bin")
+                    if os.path.exists(ema_ckpt_path):
+                        ema_vae.load_state_dict(torch.load(ema_ckpt_path, map_location=device))
+
                 disc_ckpt_path = os.path.join(checkpoint_dir, "discriminator")
                 if os.path.exists(disc_ckpt_path):
                     discriminator_engine.load_checkpoint(checkpoint_dir)
@@ -250,7 +264,7 @@ class VAEDeepSpeedTrainer(DeepSpeedRunner):
 
             for batch in train_dataloader:
                 batch: dict[str, torch.Tensor]
-                samples = batch["pixel_values"].to(dtype=dtype, non_blocking=True)
+                samples = batch["pixel_values"].to(device=device, dtype=dtype, non_blocking=True)
 
                 optimizer.zero_grad()
 
@@ -264,12 +278,18 @@ class VAEDeepSpeedTrainer(DeepSpeedRunner):
                 )
 
                 if global_step >= self.runner_config.discriminator_start_steps:
+                    for param in discriminator.parameters():
+                        param.requires_grad = False
+
                     loss_gen, log_dict_gen = self.compute_generator_loss(
                         rec_samples=rec_samples,
                         loss_nll=loss_nll,
                         discriminator=discriminator,
                         last_layer_weight=vae.decoder.conv_out.weight,
                     )
+
+                    for param in discriminator.parameters():
+                        param.requires_grad = True
                 else:
                     loss_gen = 0.
                     log_dict_gen = {}
@@ -308,35 +328,27 @@ class VAEDeepSpeedTrainer(DeepSpeedRunner):
                     global_step += 1
 
                     if global_step % self.runner_config.log_every_n_steps == 0:
-                        gathered_log_dicts: list[dict[str, torch.Tensor]] = [
-                            {} for _ in range(vae_engine.world_size)
-                        ]
-                        dist.gather_object(log_dict, gathered_log_dicts, dst=0)
-                        gathered_log_dict: dict[str, list[torch.Tensor]] = {}
-                        for log_dict_i in gathered_log_dicts:
-                            if log_dict_i is not None:
-                                for k, v in log_dict_i.items():
-                                    if k not in gathered_log_dict:
-                                        gathered_log_dict[k] = []
-                                    gathered_log_dict[k].append(v)
+                        gathered_log_dict: dict[str, torch.Tensor] = dist.gather(log_dict, dst=0)
 
-                        log_dict: dict[str, torch.Tensor] = {}
-                        for k, v in gathered_log_dict.items():
-                            v = torch.stack(v)
-                            log_dict[k] = v.mean().cpu().item() / log_dict_denom[k]
+                        if is_main_process:
+                            log_dict: dict[str, torch.Tensor] = {}
+                            for k, v in gathered_log_dict.items():
+                                log_dict[k] = v.mean().cpu().item() / log_dict_denom[k]
 
-                        logs = {"lr": lr_scheduler.get_last_lr()[0]}
-                        logs.update(log_dict)
-                        progress_bar.set_postfix(**logs)
+                            logs = {"lr": lr_scheduler.get_last_lr()[0]}
+                            logs.update(log_dict)
+                            progress_bar.set_postfix(**logs)
 
-                        events = [("lr", logs["lr"], global_step)] + [
-                            (f"train/{k}", v, global_step)
-                            for k, v in log_dict.items()
-                        ]
-                        monitor.write_events(events)
+                            events = [
+                                (f"train/{k}", v, vae_engine.global_samples)
+                                for k, v in log_dict.items()
+                            ]
+                            monitor.write_events(events)
 
                         log_dict: dict[str, torch.Tensor] = {}
                         log_dict_denom: dict[str, int] = {}
+                    else:
+                        progress_bar.set_postfix()
 
                 do_validation = (
                     vae_engine.is_gradient_accumulation_boundary() and \
@@ -359,8 +371,8 @@ class VAEDeepSpeedTrainer(DeepSpeedRunner):
                         discriminator=discriminator,
                         lpips_metric=lpips_metric,
                         monitor=monitor,
+                        device=device,
                         dtype=dtype,
-                        global_step=global_step,
                         is_main_process=is_main_process,
                         is_local_main_process=is_local_main_process,
                     )
@@ -370,13 +382,18 @@ class VAEDeepSpeedTrainer(DeepSpeedRunner):
                     with tempfile.TemporaryDirectory() as temp_checkpoint_dir:
                         vae_engine.save_checkpoint(temp_checkpoint_dir)
 
+                        if self.runner_config.use_ema:
+                            ema_ckpt_path = os.path.join(temp_checkpoint_dir, "ema_vae.bin")
+                            torch.save(ema_vae.state_dict(), ema_ckpt_path)
+
                         disc_ckpt_path = os.path.join(temp_checkpoint_dir, "discriminator")
                         discriminator_engine.save_checkpoint(disc_ckpt_path)
 
                         checkpoint = Checkpoint.from_directory(temp_checkpoint_dir)
                         ray.train.report(val_metrics, checkpoint=checkpoint)
 
-                        logger.info(f"Saved state to {temp_checkpoint_dir}")
+                        if is_main_process:
+                            logger.info(f"Saved state to {temp_checkpoint_dir}")
 
                 if global_step >= self.runner_config.max_steps:
                     done = True
@@ -395,8 +412,8 @@ class VAEDeepSpeedTrainer(DeepSpeedRunner):
                     discriminator=discriminator,
                     lpips_metric=lpips_metric,
                     monitor=monitor,
+                    device=device,
                     dtype=dtype,
-                    global_step=global_step,
                     is_main_process=is_main_process,
                     is_local_main_process=is_local_main_process,
                 )
@@ -405,6 +422,10 @@ class VAEDeepSpeedTrainer(DeepSpeedRunner):
             if do_checkpointing:
                 with tempfile.TemporaryDirectory() as temp_checkpoint_dir:
                     vae_engine.save_checkpoint(temp_checkpoint_dir)
+
+                    if self.runner_config.use_ema:
+                        ema_ckpt_path = os.path.join(temp_checkpoint_dir, "ema_vae.bin")
+                        torch.save(ema_vae.state_dict(), ema_ckpt_path)
 
                     disc_ckpt_path = os.path.join(temp_checkpoint_dir, "discriminator")
                     discriminator_engine.save_checkpoint(disc_ckpt_path)
@@ -423,8 +444,8 @@ class VAEDeepSpeedTrainer(DeepSpeedRunner):
         discriminator: Discriminator,
         lpips_metric: LPIPSMetric,
         monitor: MonitorMaster,
+        device: torch.device,
         dtype: torch.dtype,
-        global_step: int,
         is_main_process: bool,
         is_local_main_process: bool,
     ) -> dict[str, float]:
@@ -451,7 +472,7 @@ class VAEDeepSpeedTrainer(DeepSpeedRunner):
         with torch.inference_mode():
             for batch in tqdm(val_dataloader, desc="Validation", disable=not is_local_main_process):
                 batch: dict[str, torch.Tensor]
-                samples = batch["pixel_values"].to(dtype=dtype)
+                samples = batch["pixel_values"].to(device=device, dtype=dtype, non_blocking=True)
 
                 posteriors, rec_samples = vae_engine(samples)
                 rec_samples: torch.Tensor
@@ -476,30 +497,18 @@ class VAEDeepSpeedTrainer(DeepSpeedRunner):
 
                 num_batches += 1
 
-            gathered_log_dicts: list[dict[str, torch.Tensor]] = [
-                {} for _ in range(vae_engine.world_size)
-            ]
-            dist.gather_object(log_dict, gathered_log_dicts, dst=0)
-            gathered_log_dict: dict[str, list[torch.Tensor]] = {}
-            for log_dict_i in gathered_log_dicts:
-                if log_dict_i is not None:
-                    for k, v in log_dict_i.items():
-                        if k not in gathered_log_dict:
-                            gathered_log_dict[k] = []
-                        gathered_log_dict[k].append(v)
-
-            log_dict: dict[str, torch.Tensor] = {}
-            for k, v in gathered_log_dict.items():
-                v = torch.stack(v)
-                log_dict[k] = v.mean().cpu().item() / num_batches
-
-            events =[
-                (f"val/{k}", v, global_step)
-                for k, v in log_dict.items()
-            ]
-            monitor.write_events(events)
-
+            gathered_log_dict: dict[str, torch.Tensor] = dist.gather(log_dict, dst=0)
             if is_main_process:
+                log_dict: dict[str, torch.Tensor] = {}
+                for k, v in gathered_log_dict.items():
+                    log_dict[k] = v.mean().cpu().item() / num_batches
+
+                events =[
+                    (f"val/{k}", v, vae_engine.global_samples)
+                    for k, v in log_dict.items()
+                ]
+                monitor.write_events(events)
+
                 samples_to_log = torch.cat(samples_to_log, dim=0)
                 rec_samples_to_log = torch.cat(rec_samples_to_log, dim=0)
 
@@ -528,7 +537,7 @@ class VAEDeepSpeedTrainer(DeepSpeedRunner):
                                 for i, video in enumerate(rec_samples_to_log)
                             ],
                         },
-                        step=global_step,
+                        step=vae_engine.global_samples,
                     )
 
                 if monitor.tb_monitor is not None:
@@ -536,14 +545,16 @@ class VAEDeepSpeedTrainer(DeepSpeedRunner):
                         "val/samples",
                         samples_to_log,
                         fps=4,
-                        global_step=global_step,
+                        global_step=vae_engine.global_samples,
                     )
                     monitor.tb_monitor.summary_writer.add_video(
                         "val/rec_samples",
                         rec_samples_to_log,
                         fps=4,
-                        global_step=global_step,
+                        global_step=vae_engine.global_samples,
                     )
+            else:
+                log_dict = {}
 
         if restore_training:
             vae_engine.train()
@@ -592,6 +603,7 @@ class VAEDeepSpeedTrainer(DeepSpeedRunner):
         )
 
         return loss, loss_nll, {
+            "loss_ae": loss.detach(),
             "loss_rec": loss_rec.detach().mean(),
             "loss_perceptual": loss_perceptual.detach().mean(),
             "loss_nll": loss_nll.detach(),
@@ -712,7 +724,7 @@ class VAEDeepSpeedTrainer(DeepSpeedRunner):
             )
         else:
             train_dataset = StreamingVideoDataset(
-                meta["train"],
+                meta["train"][0][0],
                 spatial_size=self.data_config.spatial_size,
                 num_frames=self.data_config.num_frames,
                 frame_intervals=self.data_config.frame_intervals,
@@ -720,7 +732,7 @@ class VAEDeepSpeedTrainer(DeepSpeedRunner):
             )
 
             val_dataset = StreamingVideoDataset(
-                meta["val"],
+                meta["val"][0][0],
                 spatial_size=self.data_config.spatial_size,
                 num_frames=self.data_config.num_frames,
                 frame_intervals=self.data_config.frame_intervals,
@@ -764,15 +776,6 @@ class VAEDeepSpeedTrainer(DeepSpeedRunner):
             norm_num_groups=self.model_config.norm_num_groups,
             scaling_factor=self.model_config.scaling_factor,
             image_mode=self.model_config.image_mode,
-            with_loss=True,
-            lpips_model_name_or_path=self.model_config.lpips_model_name_or_path,
-            init_logvar=self.model_config.init_logvar,
-            reconstruction_loss_weight=self.model_config.reconstruction_loss_weight,
-            perceptual_loss_weight=self.model_config.perceptual_loss_weight,
-            nll_loss_weight=self.model_config.nll_loss_weight,
-            kl_loss_weight=self.model_config.kl_loss_weight,
-            discriminator_loss_weight=self.model_config.discriminator_loss_weight,
-            disc_block_out_channels=self.model_config.disc_block_out_channels,
         )
         vae.train()
 
