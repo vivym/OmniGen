@@ -34,7 +34,6 @@ model:
     - 256
     - 512
     - 512
-    - 512
   load_from_2d_vae: weights/vae-ft-mse-840000-ema-pruned.ckpt
 
 optimizer:
@@ -58,6 +57,6 @@ runner:
   mixed_precision: bf16
   validation_every_n_steps: 500
   checkpointing_every_n_steps: 1000
-  discriminator_start_steps: 0
+  discriminator_start_steps: 10
   log_with: wandb
   log_every_n_steps: 5

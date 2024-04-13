@@ -37,3 +37,10 @@ def gather(
         return {key: _gather(tensor, dst=dst) for key, tensor in tensors.items()}
     else:
         raise ValueError(f"Unsupported type: {type(tensors)}")
+
+
+def get_rank() -> int:
+    if dist.is_available() and dist.is_initialized():
+        return dist.get_rank()
+    else:
+        return 0

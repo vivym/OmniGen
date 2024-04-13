@@ -25,6 +25,7 @@ class StreamingVideoDataset(StreamingDataset):
     ):
         super().__init__(
             input_dir=data_dir,
+            shuffle=training,
             seed=seed,
             max_cache_size=max_cache_size,
         )

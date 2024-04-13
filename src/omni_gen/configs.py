@@ -175,7 +175,7 @@ class RunnerConfig:
 
     log_with: str | list[str] | None = None
 
-    num_cpus_per_worker: int = 1
+    num_cpus_per_worker: int = 8
 
     num_gpus_per_worker: int = 1
 
@@ -197,7 +197,7 @@ class RunnerConfig:
 
     max_failures: int = 0
 
-    log_every_n_steps: int = 50
+    log_every_n_steps: int = 5
 
     def __post_init__(self):
         self.storage_path = normalize_path(self.storage_path)

@@ -59,7 +59,7 @@ class CausalConv3d(nn.Conv3d):
         x = F.pad(
             x,
             pad=(0, 0, 0, 0, self.temporal_padding, 0),
-            mode="replicate",     # TODO: check if this is necessary
+            mode="replicate",
         )
         return super().forward(x)
 

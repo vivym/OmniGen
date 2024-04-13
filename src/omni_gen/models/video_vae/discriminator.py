@@ -97,6 +97,8 @@ class Discriminator2D(nn.Module):
 
         self.conv_out = nn.Conv2d(block_out_channels[-1], 1, kernel_size=3, padding=1)
 
+        self.apply(weight_init)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: (B, C, H, W)
         x = self.conv_in(x)
@@ -200,6 +202,8 @@ class Discriminator3D(nn.Module):
 
         self.conv_out = nn.Conv3d(block_out_channels[-1], 1, kernel_size=3, padding=1)
 
+        self.apply(weight_init)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: (B, C, T, H, W)
         x = self.conv_in(x)
@@ -230,8 +234,6 @@ class Discriminator(nn.Module):
 
         if use_3d:
             self.discriminator_3d = Discriminator3D(in_channels, block_out_channels)
-
-        self.apply(weight_init)
 
     def forward(
         self,

@@ -1,5 +1,5 @@
 data:
-  dataset_name_or_path: data/pexels.txt
+  dataset_name_or_path: data/videos.json
   spatial_size: 256
   num_frames: 17
   frame_intervals:
@@ -38,7 +38,6 @@ model:
     - 256
     - 512
     - 512
-    - 512
   load_from_2d_vae: weights/vae-ft-mse-840000-ema-pruned.ckpt
 
 optimizer:
@@ -64,3 +63,4 @@ runner:
   checkpointing_every_n_steps: 500
   discriminator_start_steps: 1000
   log_with: wandb
+  log_every_n_steps: 5

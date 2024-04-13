@@ -159,10 +159,12 @@ class SpatialTemporalUpsampler3D(Upsampler):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = F.interpolate(x, scale_factor=(1, 2, 2), mode="nearest")
         x = self.conv(x)
+
         if x.shape[2] > 1:
             first_frame, x = x[:, :, :1], x[:, :, 1:]
             x = F.interpolate(x, scale_factor=(2, 1, 1), mode="trilinear")
             x = torch.cat([first_frame, x], dim=2)
+
         return x
 
 

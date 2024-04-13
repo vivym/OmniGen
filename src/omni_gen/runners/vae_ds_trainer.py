@@ -18,13 +18,14 @@ from ray.train import (
     Checkpoint, CheckpointConfig, FailureConfig, ScalingConfig, SyncConfig, RunConfig
 )
 from ray.train.torch import TorchTrainer
+from safetensors import safe_open
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 import omni_gen.utils.distributed as dist
 from omni_gen.data.streaming_image_dataset import StreamingImageDataset
 from omni_gen.data.streaming_video_dataset import StreamingVideoDataset
-from omni_gen.models.video_vae import AutoencoderKL, Discriminator, LPIPSMetric
+from omni_gen.models.video_vae import AutoencoderKL, Discriminator2D, Discriminator3D, LPIPSMetric
 from omni_gen.utils import logging
 from omni_gen.utils.distributions import DiagonalGaussianDistribution
 from omni_gen.utils.ema import EMAModel
@@ -230,7 +231,10 @@ class VAEDeepSpeedTrainer(DeepSpeedRunner):
         if checkpoint is not None:
             with checkpoint.as_directory() as checkpoint_dir:
                 # TODO: check return values (`client_state`)
-                vae_engine.load_checkpoint(checkpoint_dir)
+                _, state = vae_engine.load_checkpoint(checkpoint_dir)
+                if "global_step" in state:
+                    global_step = state["global_step"]
+                    initial_global_step = global_step
 
                 if self.runner_config.use_ema:
                     ema_ckpt_path = os.path.join(checkpoint_dir, "ema_vae.bin")
@@ -240,9 +244,6 @@ class VAEDeepSpeedTrainer(DeepSpeedRunner):
                 disc_ckpt_path = os.path.join(checkpoint_dir, "discriminator")
                 if os.path.exists(disc_ckpt_path):
                     discriminator_engine.load_checkpoint(checkpoint_dir)
-
-        global_step = lr_scheduler.last_batch_iteration + 1
-        initial_global_step = global_step
 
         progress_bar = tqdm(
             range(0, self.runner_config.max_steps),
@@ -380,14 +381,20 @@ class VAEDeepSpeedTrainer(DeepSpeedRunner):
 
                 if do_checkpointing:
                     with tempfile.TemporaryDirectory() as temp_checkpoint_dir:
-                        vae_engine.save_checkpoint(temp_checkpoint_dir)
+                        vae_engine.save_checkpoint(
+                            temp_checkpoint_dir,
+                            client_state={"global_step": global_step},
+                        )
 
                         if self.runner_config.use_ema:
                             ema_ckpt_path = os.path.join(temp_checkpoint_dir, "ema_vae.bin")
                             torch.save(ema_vae.state_dict(), ema_ckpt_path)
 
                         disc_ckpt_path = os.path.join(temp_checkpoint_dir, "discriminator")
-                        discriminator_engine.save_checkpoint(disc_ckpt_path)
+                        discriminator_engine.save_checkpoint(
+                            disc_ckpt_path,
+                            client_state={"global_step": global_step},
+                        )
 
                         checkpoint = Checkpoint.from_directory(temp_checkpoint_dir)
                         ray.train.report(val_metrics, checkpoint=checkpoint)
@@ -441,7 +448,7 @@ class VAEDeepSpeedTrainer(DeepSpeedRunner):
         vae_engine: deepspeed.DeepSpeedEngine,
         vae: AutoencoderKL,
         ema_vae: EMAModel | None,
-        discriminator: Discriminator,
+        discriminator: Discriminator2D | Discriminator3D,
         lpips_metric: LPIPSMetric,
         monitor: MonitorMaster,
         device: torch.device,
@@ -614,32 +621,32 @@ class VAEDeepSpeedTrainer(DeepSpeedRunner):
         self,
         rec_samples: torch.Tensor,
         loss_nll: torch.Tensor,
-        discriminator: Discriminator,
+        discriminator: Discriminator2D | Discriminator3D,
         last_layer_weight: nn.Parameter,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         if self.model_config.image_mode:
             rec_samples = rec_samples[:, :, None]
 
-        rec_samples_2d = rec_samples[:, :, 0]
-        if rec_samples.shape[2] > 1:
-            rec_samples_3d = rec_samples[:, :, 1:]
-        else:
-            rec_samples_3d = None
-
         log_dict: dict[str, torch.Tensor] = {}
 
-        logits_fake_2d, logits_fake_3d = discriminator(rec_samples_2d, rec_samples_3d)
+        if rec_samples.shape[2] == 1:
+            rec_samples_2d = rec_samples[:, :, 0]
 
-        loss_g_2d = -torch.mean(logits_fake_2d)
-        log_dict["loss_g_2d"] = loss_g_2d.detach()
+            logits_fake_2d = discriminator(rec_samples_2d)
 
-        disc_weight_2d = compute_adaptive_disc_weight(
-            loss_nll, loss_g_2d, last_layer_weight
-        )
-        log_dict["disc_weight_2d"] = disc_weight_2d
-        disc_weight_2d = disc_weight_2d * self.model_config.discriminator_loss_weight
+            loss_g_2d = -torch.mean(logits_fake_2d)
+            log_dict["loss_g_2d"] = loss_g_2d.detach()
 
-        if rec_samples_3d is not None:
+            disc_weight_2d = compute_adaptive_disc_weight(
+                loss_nll, loss_g_2d, last_layer_weight
+            )
+            log_dict["disc_weight_2d"] = disc_weight_2d
+            disc_weight_2d = disc_weight_2d * self.model_config.discriminator_loss_weight
+
+            loss = loss_g_2d * disc_weight_2d
+        else:
+            logits_fake_3d = discriminator(rec_samples)
+
             loss_g_3d = -torch.mean(logits_fake_3d)
             log_dict["loss_g_3d"] = loss_g_3d.detach()
 
@@ -648,11 +655,8 @@ class VAEDeepSpeedTrainer(DeepSpeedRunner):
             )
             log_dict["disc_weight_3d"] = disc_weight_3d
             disc_weight_3d = disc_weight_3d * self.model_config.discriminator_loss_weight
-        else:
-            loss_g_3d = 0.
-            disc_weight_3d = 0.
 
-        loss = loss_g_2d * disc_weight_2d + loss_g_3d * disc_weight_3d
+            loss = loss_g_3d * disc_weight_3d
 
         return loss, log_dict
 
@@ -660,38 +664,34 @@ class VAEDeepSpeedTrainer(DeepSpeedRunner):
         self,
         samples: torch.Tensor,
         rec_samples: torch.Tensor,
-        discriminator: Discriminator,
+        discriminator: Discriminator2D | Discriminator3D,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         if self.model_config.image_mode:
             samples = samples[:, :, None]
             rec_samples = rec_samples[:, :, None]
 
-        samples_2d = samples[:, :, 0].detach()
-        if samples.shape[2] > 1:
-            samples_3d = samples[:, :, 1:].detach()
-        else:
-            samples_3d = None
-
-        rec_samples_2d = rec_samples[:, :, 0].detach()
-        if rec_samples.shape[2] > 1:
-            rec_samples_3d = rec_samples[:, :, 1:].detach()
-        else:
-            rec_samples_3d = None
-
         log_dict: dict[str, torch.Tensor] = {}
 
-        logits_real_2d, logits_real_3d = discriminator(samples_2d, samples_3d)
-        logits_fake_2d, logits_fake_3d = discriminator(rec_samples_2d, rec_samples_3d)
+        if samples.shape[2] == 1:
+            samples_2d = samples[:, :, 0].detach()
+            rec_samples_2d = rec_samples[:, :, 0].detach()
 
-        loss_real_2d = torch.mean(F.relu(1. - logits_real_2d))
-        loss_fake_2d = torch.mean(F.relu(1. + logits_fake_2d))
-        loss_d_2d = (loss_real_2d + loss_fake_2d) * 0.5
+            logits_real_2d = discriminator(samples_2d)
+            logits_fake_2d = discriminator(rec_samples_2d)
 
-        log_dict["loss_real_2d"] = loss_real_2d.detach()
-        log_dict["loss_fake_2d"] = loss_fake_2d.detach()
-        log_dict["loss_d_2d"] = loss_d_2d.detach()
+            loss_real_2d = torch.mean(F.relu(1. - logits_real_2d))
+            loss_fake_2d = torch.mean(F.relu(1. + logits_fake_2d))
+            loss_d_2d = (loss_real_2d + loss_fake_2d) * 0.5
 
-        if logits_real_3d is not None:
+            log_dict["loss_real_2d"] = loss_real_2d.detach()
+            log_dict["loss_fake_2d"] = loss_fake_2d.detach()
+            log_dict["loss_d_2d"] = loss_d_2d.detach()
+
+            loss = loss_d_2d
+        else:
+            logits_real_3d = discriminator(samples.detach())
+            logits_fake_3d = discriminator(rec_samples.detach())
+
             loss_real_3d = torch.mean(F.relu(1. - logits_real_3d))
             loss_fake_3d = torch.mean(F.relu(1. + logits_fake_3d))
             loss_d_3d = (loss_real_3d + loss_fake_3d) * 0.5
@@ -699,10 +699,8 @@ class VAEDeepSpeedTrainer(DeepSpeedRunner):
             log_dict["loss_real_3d"] = loss_real_3d.detach()
             log_dict["loss_fake_3d"] = loss_fake_3d.detach()
             log_dict["loss_d_3d"] = loss_d_3d.detach()
-        else:
-            loss_d_3d = 0.
 
-        loss = loss_d_2d + loss_d_3d
+            loss = loss_d_3d
 
         return loss, log_dict
 
@@ -757,7 +755,7 @@ class VAEDeepSpeedTrainer(DeepSpeedRunner):
 
         return train_dataloader, val_dataloader
 
-    def setup_models(self) -> tuple[AutoencoderKL, EMAModel | None, LPIPSMetric, Discriminator]:
+    def setup_models(self) -> tuple[AutoencoderKL, EMAModel | None, LPIPSMetric, Discriminator2D | Discriminator3D]:
         vae = AutoencoderKL(
             in_channels=self.model_config.in_channels,
             out_channels=self.model_config.out_channels,
@@ -780,7 +778,13 @@ class VAEDeepSpeedTrainer(DeepSpeedRunner):
         vae.train()
 
         if self.model_config.load_from_2d_vae is not None:
-            state_dict = torch.load(self.model_config.load_from_2d_vae, map_location="cpu")["state_dict"]
+            if self.model_config.load_from_2d_vae.endswith(".safetensors"):
+                state_dict = {}
+                with safe_open(self.model_config.load_from_2d_vae, framework="pt") as f:
+                    for k in f.keys():
+                        state_dict[k] = f.get_tensor(k)
+            else:
+                state_dict = torch.load(self.model_config.load_from_2d_vae, map_location="cpu")["state_dict"]
             state_dict = inflate_params_from_2d_vae(
                 vae.state_dict(), state_dict, image_mode=self.model_config.image_mode
             )
@@ -796,12 +800,16 @@ class VAEDeepSpeedTrainer(DeepSpeedRunner):
 
         lpips_metric = LPIPSMetric.from_pretrained(self.model_config.lpips_model_name_or_path)
 
-        discriminator = Discriminator(
-            in_channels=self.model_config.in_channels,
-            block_out_channels=self.model_config.disc_block_out_channels,
-            use_2d=True,
-            use_3d=not self.model_config.image_mode,
-        )
+        if self.model_config.image_mode:
+            discriminator = Discriminator2D(
+                in_channels=self.model_config.in_channels,
+                block_out_channels=self.model_config.disc_block_out_channels,
+            )
+        else:
+            discriminator = Discriminator3D(
+                in_channels=self.model_config.in_channels,
+                block_out_channels=self.model_config.disc_block_out_channels,
+            )
 
         # Create EMA for the vae and discriminator.
         if self.runner_config.use_ema:
@@ -816,6 +824,8 @@ class VAEDeepSpeedTrainer(DeepSpeedRunner):
 def compute_adaptive_disc_weight(
     loss_nll: torch.Tensor, loss_g: torch.Tensor, last_layer_weight: nn.Parameter
 ) -> torch.Tensor:
+    return torch.tensor(10000., dtype=loss_nll.dtype, device=loss_nll.device)
+
     nll_grads = torch.autograd.grad(loss_nll, last_layer_weight, retain_graph=True)[0]
     g_grads = torch.autograd.grad(loss_g, last_layer_weight, retain_graph=True)[0]
 

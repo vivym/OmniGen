@@ -38,8 +38,7 @@ model:
     - 256
     - 512
     - 512
-    - 512
-  load_from_2d_vae: weights/vae-ft-mse-840000-ema-pruned.ckpt
+  load_from_2d_vae: weights/vae-ft-16-v1-0040000-ema.safetensors
 
 optimizer:
   learning_rate: 0.0002
@@ -50,18 +49,18 @@ runner:
   runner_cls_path: omni_gen.runners.vae_ds_trainer.VAEDeepSpeedTrainer
   name: VideoVAE
   num_devices: 8
-  max_steps: 100_000
+  max_steps: 50_000
   train_batch_size: 2
   val_batch_size: 2
-  seed: 23333
+  seed: 233
   use_ema: True
   ema_power: 0.75
   gradient_accumulation_steps: 8
   zero_stage: 2
   gradient_checkpointing: False
   mixed_precision: bf16
-  validation_every_n_steps: 250
-  checkpointing_every_n_steps: 500
-  discriminator_start_steps: 1000
+  validation_every_n_steps: 100
+  checkpointing_every_n_steps: 200
+  discriminator_start_steps: 10
   log_with: wandb
   log_every_n_steps: 5
