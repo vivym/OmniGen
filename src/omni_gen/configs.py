@@ -96,6 +96,10 @@ class ModelConfig:
 
     load_from_2d_vae: str | None = None
 
+    load_from_3d_vae: str | None = None
+
+    load_from_3d_discriminator: str | None = None
+
     def __post_init__(self):
         if self.pretrained_model_name_or_path is not None:
             self.pretrained_model_name_or_path = normalize_path(self.pretrained_model_name_or_path)
@@ -108,6 +112,12 @@ class ModelConfig:
 
         if self.load_from_2d_vae is not None:
             self.load_from_2d_vae = normalize_path(self.load_from_2d_vae)
+
+        if self.load_from_3d_vae is not None:
+            self.load_from_3d_vae = normalize_path(self.load_from_3d_vae)
+
+        if self.load_from_3d_discriminator is not None:
+            self.load_from_3d_discriminator = normalize_path(self.load_from_3d_discriminator)
 
 
 @dataclass

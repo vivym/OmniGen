@@ -777,7 +777,15 @@ class VAEDeepSpeedTrainer(DeepSpeedRunner):
         )
         vae.train()
 
-        if self.model_config.load_from_2d_vae is not None:
+        if self.model_config.load_from_3d_vae is not None:
+            if self.model_config.load_from_3d_vae.endswith(".safetensors"):
+                state_dict = {}
+                with safe_open(self.model_config.load_from_3d_vae, framework="pt") as f:
+                    for k in f.keys():
+                        state_dict[k] = f.get_tensor(k)
+            else:
+                state_dict = torch.load(self.model_config.load_from_3d_vae, map_location="cpu")
+        elif self.model_config.load_from_2d_vae is not None:
             if self.model_config.load_from_2d_vae.endswith(".safetensors"):
                 state_dict = {}
                 with safe_open(self.model_config.load_from_2d_vae, framework="pt") as f:
@@ -788,11 +796,11 @@ class VAEDeepSpeedTrainer(DeepSpeedRunner):
             state_dict = inflate_params_from_2d_vae(
                 vae.state_dict(), state_dict, image_mode=self.model_config.image_mode
             )
-            missing_keys, unexpected_keys = vae.load_state_dict(state_dict, strict=False)
+        else:
+            state_dict = None
 
-            missing_keys: list[str]
-            missing_keys = filter(lambda x: not x.startswith("loss."), missing_keys)
-            missing_keys = list(missing_keys)
+        if state_dict is not None:
+            missing_keys, unexpected_keys = vae.load_state_dict(state_dict, strict=False)
 
             if len(missing_keys) > 0 or len(unexpected_keys) > 0:
                 logger.warning(f"Missing keys: {missing_keys}, Unexpected keys: {unexpected_keys}.")
@@ -810,6 +818,24 @@ class VAEDeepSpeedTrainer(DeepSpeedRunner):
                 in_channels=self.model_config.in_channels,
                 block_out_channels=self.model_config.disc_block_out_channels,
             )
+
+            if self.model_config.load_from_3d_discriminator is not None:
+                if self.model_config.load_from_3d_discriminator.endswith(".safetensors"):
+                    state_dict = {}
+                    with safe_open(self.model_config.load_from_3d_discriminator, framework="pt") as f:
+                        for k in f.keys():
+                            state_dict[k] = f.get_tensor(k)
+                else:
+                    state_dict = torch.load(self.model_config.load_from_3d_discriminator, map_location="cpu")
+            else:
+                state_dict = None
+
+            if state_dict is not None:
+                missing_keys, unexpected_keys = discriminator.load_state_dict(state_dict, strict=False)
+
+                if len(missing_keys) > 0 or len(unexpected_keys) > 0:
+                    logger.warning(f"Missing keys: {missing_keys}, Unexpected keys: {unexpected_keys}.")
+                    print(f"Missing keys: {missing_keys}, Unexpected keys: {unexpected_keys}.")
 
         # Create EMA for the vae and discriminator.
         if self.runner_config.use_ema:

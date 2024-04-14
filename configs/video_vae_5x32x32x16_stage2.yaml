@@ -1,0 +1,67 @@
+data:
+  dataset_name_or_path: data/videos.json
+  spatial_size: 256
+  num_frames: 17
+  frame_intervals:
+    - 1
+    - 2
+    - 4
+    - 8
+
+model:
+  down_block_types:
+    - SpatialDownBlock3D
+    - SpatialTemporalDownBlock3D
+    - SpatialTemporalDownBlock3D
+    - SpatialTemporalDownBlock3D
+  up_block_types:
+    - SpatialTemporalUpBlock3D
+    - SpatialTemporalUpBlock3D
+    - SpatialUpBlock3D
+    - SpatialUpBlock3D
+  block_out_channels:
+    - 128
+    - 256
+    - 512
+    - 512
+  mid_block_use_attention: True
+  mid_block_attention_type: spatial
+  layers_per_block: 2
+  latent_channels: 16
+  reconstruction_loss_type: l2
+  reconstruction_loss_weight: 1.0
+  perceptual_loss_weight: 0.1
+  kl_loss_weight: 0.00001
+  discriminator_loss_weight: 0.5
+  disc_block_out_channels:
+    - 128
+    - 256
+    - 512
+    - 512
+  load_from_3d_vae: weights/vae-ft-16-v1-0040000-ema.safetensors
+  load_from_3d_discriminator: weights/discriminator-ft-16-v1-0040000-ema.safetensors
+
+optimizer:
+  learning_rate: 0.0002
+  lr_scheduler: WarmupLR
+  lr_warmup_steps: 0
+
+runner:
+  runner_cls_path: omni_gen.runners.vae_ds_trainer.VAEDeepSpeedTrainer
+  name: VideoVAE
+  num_devices: 8
+  max_steps: 50_000
+  train_batch_size: 2
+  val_batch_size: 2
+  seed: 233
+  use_ema: True
+  ema_power: 0.75
+  gradient_accumulation_steps: 8
+  zero_stage: 2
+  gradient_checkpointing: False
+  mixed_precision: bf16
+  validation_every_n_steps: 100
+  checkpointing_every_n_steps: 200
+  discriminator_start_steps: 10
+  log_with: wandb
+  log_every_n_steps: 5
