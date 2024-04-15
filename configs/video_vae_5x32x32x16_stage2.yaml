@@ -38,8 +38,6 @@ model:
     - 256
     - 512
     - 512
-  load_from_3d_vae: weights/vae-ft-16-v1-0040000-ema.safetensors
-  load_from_3d_discriminator: weights/discriminator-ft-16-v1-0040000-ema.safetensors
 
 optimizer:
   learning_rate: 0.0002
@@ -53,7 +51,7 @@ runner:
   max_steps: 50_000
   train_batch_size: 2
   val_batch_size: 2
-  seed: 233
+  seed: 2331
   use_ema: True
   ema_power: 0.75
   gradient_accumulation_steps: 8
@@ -62,6 +60,7 @@ runner:
   mixed_precision: bf16
   validation_every_n_steps: 100
   checkpointing_every_n_steps: 200
-  discriminator_start_steps: 10
+  discriminator_start_steps: 0
   log_with: wandb
   log_every_n_steps: 5
+  resume_from_checkpoint: outputs/VideoVAE/TorchTrainer_08b0b_00000_0_2024-04-13_21-16-27/checkpoint_000030

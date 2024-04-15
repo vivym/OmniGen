@@ -38,7 +38,7 @@ logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 class VAEDeepSpeedTrainer(DeepSpeedRunner):
     def __call__(self):
         storage_path = Path(self.runner_config.storage_path).resolve()
-        experiment_path = storage_path / self.runner_config.name
+        experiment_path = str(storage_path / self.runner_config.name)
 
         if (
             self.runner_config.resume_from_checkpoint == "latest" and
@@ -243,7 +243,7 @@ class VAEDeepSpeedTrainer(DeepSpeedRunner):
 
                 disc_ckpt_path = os.path.join(checkpoint_dir, "discriminator")
                 if os.path.exists(disc_ckpt_path):
-                    discriminator_engine.load_checkpoint(checkpoint_dir)
+                    discriminator_engine.load_checkpoint(disc_ckpt_path)
 
         progress_bar = tqdm(
             range(0, self.runner_config.max_steps),
@@ -850,7 +850,7 @@ class VAEDeepSpeedTrainer(DeepSpeedRunner):
 def compute_adaptive_disc_weight(
     loss_nll: torch.Tensor, loss_g: torch.Tensor, last_layer_weight: nn.Parameter
 ) -> torch.Tensor:
-    return torch.tensor(10000., dtype=loss_nll.dtype, device=loss_nll.device)
+    return torch.tensor(8000., dtype=loss_nll.dtype, device=loss_nll.device)
 
     nll_grads = torch.autograd.grad(loss_nll, last_layer_weight, retain_graph=True)[0]
     g_grads = torch.autograd.grad(loss_g, last_layer_weight, retain_graph=True)[0]
